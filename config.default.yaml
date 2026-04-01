@@ -1,0 +1,23 @@
+server:
+  # Base-URL deines OpenAI-kompatiblen Servers (LiteLLM etc.)
+  # Beispiele:
+  # - "https://134.130.13.43:4000/v1"
+  # - "http://localhost:4000/v1"
+  url: "https://134.130.13.43:4000/v1"
+  client: "openai_sdk"
+  model_name: "meta-llama/Meta-Llama-3.1-8B-Instruct"
+  # self-signed certificate 
+  verify_ssl: false
+  # API-Key from Env-Var
+  api_key_env: "MED_SERVER_API_KEY"
+  api_key: ""
+  timeout_s: 60
+
+benchmark_settings:
+  limit_samples: null # Whole dataset
+  temperature: 0.0
+  max_tokens: 256
+  # optional: sleep between requests to avoid rate limits
+  sleep_s: 0
+  # optional: abort if too many errors
+  max_errors: 200
