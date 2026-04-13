@@ -2,13 +2,45 @@ server:
   # Base-URL of LLM Server
   url: "https://134.130.13.43:4000/v1"
   client: "openai_sdk"
-  # Enter model name to evaluate 
+  # Enter model name to evaluate
   model_name: "meta-llama/Meta-Llama-3.1-8B-Instruct"
-  
+
   verify_ssl: false
   api_key_env: "MED_SERVER_API_KEY"
   api_key: ""
   timeout_s: 60
+
+# Which benchmark(s) to run.
+#
+# Single benchmark (string):
+#   benchmark: medqa
+#
+# Multiple benchmarks (list):
+#   benchmark: [medqa, rar, radbench]
+#
+# All benchmarks:
+#   benchmark: all
+#
+# Available benchmarks:
+#   medqa           – USMLE MCQ; metric: Accuracy
+#                     Paper: Jin et al. 2021 (https://arxiv.org/abs/2009.13081)
+#   rar             – Reasoning and Radiology MCQ; metric: Accuracy
+#                     Paper: Wind et al. 2025, npj Digital Medicine
+#   radbench        – RadBench (harrison.ai) clinical MCQ; metric: Accuracy
+#                     Paper: https://harrison-ai.github.io/radbench/
+#   vqa_med_2019    – VQA-Med-2019 image VQA (VLM needed); metric: BLEU + Accuracy
+#                     Paper: Ben Abacha et al. 2019, ImageCLEF
+#   radimagenet_vqa – RadImageNet-VQA CT/MRI/X-ray (VLM needed)
+#                     Metrics: MCQ Accuracy, Yes/No Accuracy, LLM-Judge (open)
+#                     Paper: Butsanets et al. 2025 (https://arxiv.org/abs/2512.17396)
+#                     HF:    raidium/RadImageNet-VQA
+#   label_extraction – Entity extraction from radiology reports; metric: Micro F1
+#                     Based on: RadGraph (Jain et al. NeurIPS 2021)
+#   radiorag        – Open-ended radiology QA; metric: LLM-Judge accuracy (binary)
+#                     Paper: Tayebi Arasteh et al. 2024 (https://arxiv.org/abs/2407.15621)
+#                     GitHub: https://github.com/tayebiarasteh/RadioRAG
+#                     Note: dataset NOT on HuggingFace — local file required
+benchmark: [medqa,rar,radbench, label_extraction, radiorag]
 
 benchmark_settings:
   limit_samples: null # Whole dataset

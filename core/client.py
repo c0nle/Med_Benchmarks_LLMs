@@ -75,36 +75,37 @@ class MedicalLLMClient:
             return url.rstrip("/") + "/chat/completions"
         return url
 
-    def ask_question(self, prompt):
-        if self._openai_client is not None:
-            try:
-                kwargs = {
-                    "model": self.model,
-                    "messages": [
-                        {"role": "system", "content": "Du bist ein medizinischer Experte. Antworte präzise."},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "temperature": self.temperature,
-                }
-                if self.max_tokens is not None:
-                    kwargs["max_tokens"] = self.max_tokens
+    def _build_messages(self, user_content):
+        """Build the standard message list with system prompt."""
+        return [
+            {"role": "system", "content": "Du bist ein medizinischer Experte. Antworte präzise."},
+            {"role": "user", "content": user_content},
+        ]
 
-                response = self._openai_client.chat.completions.create(**kwargs)
-                return response.choices[0].message.content
-            except Exception as e:
-                return f"Error: {str(e)}"
+    def _call_openai(self, messages):
+        """Call via OpenAI SDK and return content string or Error: string."""
+        try:
+            kwargs = {
+                "model": self.model,
+                "messages": messages,
+                "temperature": self.temperature,
+            }
+            if self.max_tokens is not None:
+                kwargs["max_tokens"] = self.max_tokens
+            response = self._openai_client.chat.completions.create(**kwargs)
+            return response.choices[0].message.content
+        except Exception as e:
+            return f"Error: {str(e)}"
 
+    def _call_requests(self, messages):
+        """Call via raw requests and return content string or Error: string."""
         payload = {
             "model": self.model,
-            "messages": [
-                {"role": "system", "content": "Du bist ein medizinischer Experte. Antworte präzise."},
-                {"role": "user", "content": prompt}
-            ],
+            "messages": messages,
             "temperature": self.temperature,
         }
         if self.max_tokens is not None:
             payload["max_tokens"] = self.max_tokens
-        
         try:
             response = requests.post(
                 self.url,
@@ -114,8 +115,7 @@ class MedicalLLMClient:
                 verify=self.verify_ssl,
             )
             response.raise_for_status()
-            result = response.json()
-            return result['choices'][0]['message']['content']
+            return response.json()["choices"][0]["message"]["content"]
         except requests.HTTPError as e:
             resp = getattr(e, "response", None)
             status = resp.status_code if resp is not None else "?"
@@ -130,3 +130,39 @@ class MedicalLLMClient:
             return f"Error: HTTP {status} {detail}".strip()
         except Exception as e:
             return f"Error: {str(e)}"
+
+    def ask_question(self, prompt: str) -> str:
+        """Send a text-only prompt and return the model's answer."""
+        messages = self._build_messages(prompt)
+        if self._openai_client is not None:
+            return self._call_openai(messages)
+        return self._call_requests(messages)
+
+    def ask_with_image(self, prompt: str, image_b64: str, image_format: str = "jpeg") -> str:
+        """
+        Send a prompt together with a base64-encoded image (VLM / multimodal).
+
+        Parameters
+        ----------
+        prompt       : The text question / instruction.
+        image_b64    : Base64-encoded image bytes (JPEG or PNG).
+        image_format : "jpeg" or "png"  (default: "jpeg").
+
+        Returns the model's answer or "Error: ..." on failure.
+        Requires the target model to be a vision-capable LLM.
+        """
+        media_type = f"image/{'jpeg' if image_format.lower() in ('jpg', 'jpeg') else image_format.lower()}"
+        user_content = [
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:{media_type};base64,{image_b64}"},
+            },
+            {"type": "text", "text": prompt},
+        ]
+        messages = [
+            {"role": "system", "content": "Du bist ein medizinischer Experte für bildgebende Diagnostik. Antworte präzise."},
+            {"role": "user", "content": user_content},
+        ]
+        if self._openai_client is not None:
+            return self._call_openai(messages)
+        return self._call_requests(messages)

@@ -1,13 +1,141 @@
+"""
+Medical Benchmark Runner
+
+Supports running one or multiple benchmarks in a single call.
+
+config.yaml options:
+  benchmark: medqa                        # single benchmark
+  benchmark: [medqa, rar, radbench]       # list
+  benchmark: all                          # run every registered benchmark
+"""
 import yaml
-import pandas as pd
 import os
-import csv
-import time
-from loaders.text_benchmarks import load_medqa
+import importlib
+
 from core.client import MedicalLLMClient
 
+# ---------------------------------------------------------------------------
+# Benchmark registry
+# ---------------------------------------------------------------------------
+# Maps benchmark name → (loader_callable, task_module_path, eval_type)
+# eval_type: "mcq" | "vqa" | "extraction"
+
+def _registry():
+    from loaders.text_benchmarks import (
+        load_medqa,
+        load_rar,
+        load_radbench,
+        load_label_extraction,
+        load_radiorag,
+    )
+    from loaders.vision_benchmarks import (
+        load_vqa_med_2019,
+        load_radimagenet_vqa,
+    )
+    return {
+        "medqa":            (load_medqa,            "tasks.mcq",        "mcq"),
+        "rar":              (load_rar,               "tasks.mcq",        "mcq"),
+        "radbench":         (load_radbench,          "tasks.mcq",        "mcq"),
+        "vqa_med_2019":     (load_vqa_med_2019,      "tasks.vqa",        "vqa"),
+        "radimagenet_vqa":  (load_radimagenet_vqa,   "tasks.vqa",        "vqa"),
+        "label_extraction": (load_label_extraction,  "tasks.extraction", "extraction"),
+        "radiorag":         (load_radiorag,           "tasks.open_qa",    "open_qa"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _resolve_benchmarks(config: dict, registry: dict) -> list:
+    """
+    Parse the 'benchmark' config key.
+
+    Accepted forms:
+      benchmark: medqa                          → ["medqa"]
+      benchmark: [medqa, rar, radbench]         → ["medqa", "rar", "radbench"]
+      benchmark: all                            → all registered benchmarks (sorted)
+    """
+    raw = config.get("benchmark", "medqa")
+
+    if isinstance(raw, list):
+        names = [str(b).strip().lower() for b in raw]
+    elif str(raw).strip().lower() == "all":
+        names = sorted(registry.keys())
+    else:
+        names = [str(raw).strip().lower()]
+
+    unknown = [n for n in names if n not in registry]
+    if unknown:
+        raise ValueError(
+            f"Unbekannte Benchmark(s): {unknown}. "
+            f"Verfügbar: {', '.join(sorted(registry.keys()))}"
+        )
+    return names
+
+
+def _run_one(benchmark: str, registry: dict, config: dict, client) -> None:
+    """Load data, run the task, and evaluate for a single benchmark."""
+    loader, task_module_path, eval_type = registry[benchmark]
+
+    print(f"\n{'='*60}")
+    print(f"  Benchmark: {benchmark.upper()}")
+    print(f"{'='*60}")
+
+    limit = config.get("benchmark_settings", {}).get("limit_samples", None)
+    data = loader(limit=limit)
+
+    os.makedirs("results", exist_ok=True)
+    results_path = f"results/{benchmark}_results.csv"
+    report_path  = f"results/{benchmark}_report.jsonl"
+
+    task = importlib.import_module(task_module_path)
+    task.run(config, client, data, results_path)
+
+    _evaluate(benchmark, eval_type, results_path, report_path, config)
+
+
+def _evaluate(benchmark: str, eval_type: str, results_path: str, report_path: str, config: dict) -> None:
+    """Run the appropriate evaluation and print a terminal report."""
+    try:
+        if eval_type == "mcq":
+            from evaluate import write_report_jsonl, print_terminal_report
+            report = write_report_jsonl(results_path, out_path=report_path)
+            print_terminal_report(results_path)
+            print(f"Auswertung gespeichert: {report['path']}")
+
+        elif eval_type == "vqa":
+            from evaluate import write_vqa_report_jsonl, print_vqa_terminal_report
+            report = write_vqa_report_jsonl(results_path, out_path=report_path)
+            print_vqa_terminal_report(results_path)
+            print(f"Auswertung gespeichert: {report_path}")
+            print("Tipp: LLM-as-a-Judge für open-ended Fragen nachträglich:")
+            print(f"  python evaluate.py {results_path} --type vqa --judge")
+
+        elif eval_type == "extraction":
+            from evaluate import write_extraction_report_jsonl, print_extraction_terminal_report
+            report = write_extraction_report_jsonl(results_path, out_path=report_path)
+            print_extraction_terminal_report(results_path)
+            print(f"Auswertung gespeichert: {report_path}")
+
+        elif eval_type == "open_qa":
+            from evaluate import write_open_qa_report_jsonl, print_open_qa_terminal_report
+            # Automatic metrics only; LLM-as-a-Judge requires --judge flag
+            report = write_open_qa_report_jsonl(results_path, out_path=report_path)
+            print_open_qa_terminal_report(results_path)
+            print(f"Auswertung gespeichert: {report_path}")
+            print("Tipp: LLM-as-a-Judge (primäre Metrik laut Paper) nachträglich:")
+            print(f"  python evaluate.py {results_path} --type open_qa --judge")
+
+    except Exception as e:
+        print(f"Warnung: Auswertung für '{benchmark}' fehlgeschlagen: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
 def main():
-    # Config
     config_path = "config.yaml" if os.path.exists("config.yaml") else "config.default.yaml"
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
@@ -15,108 +143,30 @@ def main():
         print("Hinweis: config.yaml nicht gefunden, nutze config.default.yaml. "
               "Lege eine eigene config.yaml an (wird via .gitignore ignoriert).")
 
-    # Data
-    limit = config.get("benchmark_settings", {}).get("limit_samples", None)
-    data = load_medqa(limit=limit)
+    registry = _registry()
+    benchmarks = _resolve_benchmarks(config, registry)
 
-    sleep_s = float(config.get("benchmark_settings", {}).get("sleep_s", 0) or 0)
-    max_errors = config.get("benchmark_settings", {}).get("max_errors", None)
-    max_errors = int(max_errors) if max_errors is not None else None
-    
-    # 3 Client
+    if len(benchmarks) > 1:
+        print(f"Multi-Benchmark Modus: {benchmarks}")
+
     client = MedicalLLMClient(config)
-    
-    os.makedirs("results", exist_ok=True)
-    results_path = "results/benchmark_results.csv"
-    fieldnames = ["id", "question", "correct_answer", "model_answer"]
 
-    # Resume if file exists
-    completed_ids = set()
-    if os.path.exists(results_path) and os.path.getsize(results_path) > 0:
+    summary = []
+    for benchmark in benchmarks:
         try:
-            existing = pd.read_csv(results_path, usecols=["id"])
-            completed_ids = set(existing["id"].dropna().astype(str).tolist())
-            if completed_ids:
-                print(f"Resume: {len(completed_ids)} Fragen bereits in {results_path} vorhanden, überspringe diese.")
-        except Exception:
-            # If the file is corrupted/partial, we just append and don't skip.
-            completed_ids = set()
+            _run_one(benchmark, registry, config, client)
+            summary.append((benchmark, "OK"))
+        except Exception as e:
+            print(f"\nFehler bei Benchmark '{benchmark}': {e}")
+            summary.append((benchmark, f"FEHLER: {e}"))
 
-    total = len(data)
-    remaining = sum(1 for item in data if str(item.get("id")) not in completed_ids)
-    print(f"Starte Benchmarking für {total} Fragen (neu zu bearbeiten: {remaining})...")
+    if len(benchmarks) > 1:
+        print(f"\n{'='*60}")
+        print("  Zusammenfassung")
+        print(f"{'='*60}")
+        for name, status in summary:
+            print(f"  {name:<20} {status}")
 
-    start = time.time()
-    processed_new = 0
-    errors = 0
-
-    file_exists = os.path.exists(results_path) and os.path.getsize(results_path) > 0
-    with open(results_path, "a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        if not file_exists:
-            writer.writeheader()
-
-        for idx, item in enumerate(data, start=1):
-            item_id = str(item.get("id"))
-            if item_id in completed_ids:
-                continue
-
-            prompt = (
-                f"Frage: {item['question']}\n"
-                f"Optionen: {item['options']}\n"
-                "Antworte nur mit dem korrekten Buchstaben (A/B/C/D)."
-            )
-
-            print(f"[{idx}/{total}] Bearbeite Frage ID: {item_id}...")
-            model_answer = client.ask_question(prompt)
-            if isinstance(model_answer, str) and model_answer.startswith("Error:"):
-                errors += 1
-                if max_errors is not None and errors >= max_errors:
-                    print(f"Abbruch: max_errors={max_errors} erreicht.")
-                    writer.writerow(
-                        {
-                            "id": item_id,
-                            "question": item["question"],
-                            "correct_answer": item["correct_answer"],
-                            "model_answer": model_answer,
-                        }
-                    )
-                    f.flush()
-                    break
-
-            writer.writerow(
-                {
-                    "id": item_id,
-                    "question": item["question"],
-                    "correct_answer": item["correct_answer"],
-                    "model_answer": model_answer,
-                }
-            )
-            f.flush()
-            processed_new += 1
-
-            if sleep_s > 0:
-                time.sleep(sleep_s)
-
-            if processed_new % 50 == 0:
-                elapsed = time.time() - start
-                rate = processed_new / elapsed if elapsed > 0 else 0.0
-                eta_s = int((remaining - processed_new) / rate) if rate > 0 else -1
-                eta = f"{eta_s//3600:02d}:{(eta_s%3600)//60:02d}:{eta_s%60:02d}" if eta_s >= 0 else "?"
-                print(f"Progress: {processed_new}/{remaining} neu, Errors: {errors}, Rate: {rate:.2f} q/s, ETA: {eta}")
-
-    print(f"Benchmark abgeschlossen. Ergebnisse in {results_path}")
-
-    # Evaluate / Score
-    try:
-        from evaluate import print_terminal_report, write_report_jsonl
-
-        report_path = "results/benchmark_report.jsonl"
-        report = write_report_jsonl(results_path, out_path=report_path)
-        print_terminal_report(results_path)
-        print(f"Auswertung gespeichert in: {report['path']}")
-    except Exception as e:
-        print(f"Warnung: Auswertung fehlgeschlagen: {e}")
 
 if __name__ == "__main__":
     main()
