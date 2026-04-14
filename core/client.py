@@ -78,7 +78,7 @@ class MedicalLLMClient:
     def _build_messages(self, user_content):
         """Build the standard message list with system prompt."""
         return [
-            {"role": "system", "content": "Du bist ein medizinischer Experte. Antworte präzise."},
+            {"role": "system", "content": "You are a medical expert in diagnostic imaging. Answer concisely and in English."},
             {"role": "user", "content": user_content},
         ]
 
@@ -160,7 +160,7 @@ class MedicalLLMClient:
             {"type": "text", "text": prompt},
         ]
         messages = [
-            {"role": "system", "content": "Du bist ein medizinischer Experte für bildgebende Diagnostik. Antworte präzise."},
+            {"role": "system", "content": "You are a medical expert in diagnostic imaging. Answer concisely and in English."},
             {"role": "user", "content": user_content},
         ]
         if self._openai_client is not None:

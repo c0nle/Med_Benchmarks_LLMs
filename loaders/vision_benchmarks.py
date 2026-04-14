@@ -1,5 +1,5 @@
 """
-Vision benchmark loaders: VQA-Med-2019 and RadImageNet-VQA.
+Vision benchmark loaders: RadBench, VQA-Med-2019, RadImageNet-VQA.
 
 Each item follows this schema:
 {
@@ -7,9 +7,13 @@ Each item follows this schema:
     "benchmark":    str,
     "question":     str,
     "answer":       str,       # reference / ground-truth answer
+    "options":      list,      # [{"key": "A", "value": "..."}, ...] — MCQ only
     "image":        PIL.Image or None,
     "image_format": str,       # "jpeg" | "png"
-    "meta":         dict,
+    "meta": {
+        "question_type": str,  # "mcq" | "yes_no" | "open"
+        ...
+    }
 }
 """
 import os
@@ -53,13 +57,24 @@ def _format_vqa_med_item(item: dict, idx: int) -> dict:
         or item.get("gt")
         or ""
     )
+    # HF dataset sometimes returns answer as a list or as a list-repr string
+    # e.g. ['cta - ct angiography'] → 'cta - ct angiography'
+    if isinstance(answer, list):
+        answer = answer[0] if answer else ""
+    else:
+        answer = str(answer).strip()
+        if answer.startswith("['") and answer.endswith("']"):
+            answer = answer[2:-2]
+        elif answer.startswith('["') and answer.endswith('"]'):
+            answer = answer[2:-2]
+
     image = item.get("image") or item.get("img") or None
 
     return {
         "id": str(item.get("id") or item.get("qid") or item.get("image_name") or f"vqamed-{idx}"),
         "benchmark": "VQA-Med-2019",
         "question": str(question),
-        "answer": str(answer),
+        "answer": answer,
         "image": image,
         "image_format": "jpeg",
         "meta": {
@@ -242,17 +257,23 @@ def load_radimagenet_vqa(limit=None):
         dataset = _load_local_parquet(local_path)
     else:
         # Official HF dataset: raidium/RadImageNet-VQA (Butsanets et al., 2025)
+        # Config name is "alignment"; available split is "train".
         hf_candidates = [
-            ("raidium/RadImageNet-VQA", "test"),
-            ("raidium/RadImageNet-VQA", "train"),
-            ("raidium/RadImageNet-VQA", "validation"),
+            ("raidium/RadImageNet-VQA", "alignment", "train"),
+            ("raidium/RadImageNet-VQA", "alignment", "test"),
+            ("raidium/RadImageNet-VQA", None, "test"),
+            ("raidium/RadImageNet-VQA", None, "train"),
         ]
         dataset = None
         last_err = None
-        for hf_id, split in hf_candidates:
+        for hf_id, config_name, split in hf_candidates:
             try:
-                dataset = load_dataset(hf_id, split=split)
-                print(f"  Geladen von HuggingFace: {hf_id} (split={split})")
+                kwargs = {"split": split}
+                if config_name:
+                    kwargs["name"] = config_name
+                dataset = load_dataset(hf_id, **kwargs)
+                label = f"{hf_id}" + (f" (config={config_name})" if config_name else "") + f" (split={split})"
+                print(f"  Geladen von HuggingFace: {label}")
                 break
             except Exception as e:
                 last_err = e
@@ -270,3 +291,131 @@ def load_radimagenet_vqa(limit=None):
         dataset = dataset.select(range(min(limit, len(dataset))))
 
     return [_format_radimagenet_item(item, idx) for idx, item in enumerate(dataset)]
+
+
+# ---------------------------------------------------------------------------
+# RadBench (harrison.ai) – VLM benchmark with X-ray images
+# ---------------------------------------------------------------------------
+
+def _detect_radbench_qtype(item: dict) -> str:
+    """
+    RadBench has two question types stored in the A_TYPE field:
+      - "closed-ended" → MCQ with answer options (377 questions)
+      - "open-ended"   → free-text answer, evaluated with BLEU + LLM-judge (120 questions)
+    """
+    a_type = str(item.get("A_TYPE") or item.get("a_type") or item.get("type") or "").lower()
+    if "open" in a_type:
+        return "open"
+    # Check for presence of options as fallback
+    has_options = bool(item.get("OPTIONS") or item.get("options") or item.get("choices"))
+    if has_options:
+        return "mcq"
+    return "open"
+
+
+def _format_radbench_item(item: dict, idx: int) -> dict:
+    """
+    Normalise a RadBench (harrison.ai) row into the shared VQA schema.
+
+    RadBench dataset fields (from https://github.com/harrison-ai/radbench):
+      imageSource, CASE_ID, imageIDs, modality, IMAGE_ORGAN, PRIMARY_DX,
+      QUESTION, Q_TYPE, ANSWER, A_TYPE, OPTIONS
+    """
+    q_type = _detect_radbench_qtype(item)
+
+    # Build options list for MCQ items
+    opts_raw = item.get("OPTIONS") or item.get("options") or item.get("choices") or {}
+    if isinstance(opts_raw, dict):
+        options = [{"key": k, "value": v} for k, v in opts_raw.items()]
+    elif isinstance(opts_raw, list) and opts_raw:
+        if isinstance(opts_raw[0], str):
+            keys = ["A", "B", "C", "D", "E"]
+            options = [{"key": keys[i], "value": v} for i, v in enumerate(opts_raw)]
+        else:
+            options = opts_raw
+    else:
+        options = []
+
+    # If closed-ended but options look like yes/no, treat as yes_no
+    if q_type == "mcq" and len(options) == 2:
+        vals = {o["value"].strip().lower() for o in options}
+        if vals <= {"yes", "no"}:
+            q_type = "yes_no"
+
+    answer = str(item.get("ANSWER") or item.get("answer") or item.get("gt") or "").strip()
+
+    image = item.get("image") or item.get("img") or None
+
+    return {
+        "id": str(item.get("CASE_ID") or item.get("id") or item.get("qid") or f"radbench-{idx}"),
+        "benchmark": "RadBench",
+        "question": str(item.get("QUESTION") or item.get("question") or ""),
+        "answer": answer,
+        "options": options,
+        "image": image,
+        "image_format": "jpeg",
+        "meta": {
+            "question_type": q_type,       # "mcq" | "yes_no" | "open"
+            "q_type_category": str(item.get("Q_TYPE") or ""),   # Pathology, Clinical, …
+            "modality": str(item.get("modality") or "XR"),
+            "organ": str(item.get("IMAGE_ORGAN") or ""),
+            "source": str(item.get("imageSource") or "RadBench"),
+        },
+    }
+
+
+def load_radbench(limit=None):
+    """
+    Loads the RadBench benchmark (harrison.ai).
+
+    RadBench is a **VLM benchmark** using plain X-ray images (XR) from
+    MedPix and Radiopaedia cases. It is NOT text-only.
+      - 89 unique cases (40 MedPix, 49 Radiopaedia)
+      - 497 questions: 377 closed-ended MCQ/Yes-No + 120 open-ended
+      - Modality: X-ray (plain film), sometimes multi-image per case
+
+    Evaluation:
+      - Closed-ended MCQ   → letter-accuracy (rule-based)
+      - Closed-ended Yes/No → exact-match accuracy
+      - Open-ended          → BLEU + LLM-as-a-Judge
+
+    RadBench is NOT on HuggingFace. Download from:
+      https://github.com/harrison-ai/radbench
+      https://harrison-ai.github.io/radbench/
+
+    Priority:
+    1) Local parquet via env var RADBENCH_PARQUET_PATH
+    2) Auto-detect data/radbench*.parquet
+    """
+    print("--- Lade RadBench (harrison.ai – VLM Röntgen-Benchmark) ---")
+
+    local_path = os.getenv("RADBENCH_PARQUET_PATH")
+    if not local_path:
+        for candidate in (
+            "data/radbench.parquet",
+            "data/radbench-test.parquet",
+            "data/radbench_test.parquet",
+        ):
+            if Path(candidate).exists():
+                local_path = candidate
+                break
+
+    if local_path is None:
+        raise RuntimeError(
+            "RadBench konnte nicht geladen werden.\n\n"
+            "Das Dataset ist NICHT auf HuggingFace. Bitte:\n"
+            "1) Daten von https://github.com/harrison-ai/radbench herunterladen.\n"
+            "2) Als Parquet ablegen und Pfad setzen:\n"
+            "   export RADBENCH_PARQUET_PATH=/pfad/zur/radbench.parquet\n"
+            "   (Erwartete Spalten: QUESTION, ANSWER, A_TYPE, OPTIONS,\n"
+            "    IMAGE_ORGAN, modality, CASE_ID, optional: image)\n"
+            "Hinweis: Bilder (X-rays) sind separat in /images/ im Repo.\n"
+            "         Ohne Bild läuft das Modell text-only (gültig als Baseline).\n"
+        )
+
+    dataset = _load_local_parquet(local_path)
+
+    if limit:
+        dataset = dataset.select(range(min(limit, len(dataset))))
+
+    return [_format_radbench_item(item, idx) for idx, item in enumerate(dataset)]

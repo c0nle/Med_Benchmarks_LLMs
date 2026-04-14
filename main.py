@@ -24,20 +24,23 @@ def _registry():
     from loaders.text_benchmarks import (
         load_medqa,
         load_rar,
-        load_radbench,
         load_label_extraction,
         load_radiorag,
     )
     from loaders.vision_benchmarks import (
+        load_radbench,
         load_vqa_med_2019,
         load_radimagenet_vqa,
     )
     return {
+        # Text-only MCQ
         "medqa":            (load_medqa,            "tasks.mcq",        "mcq"),
         "rar":              (load_rar,               "tasks.mcq",        "mcq"),
-        "radbench":         (load_radbench,          "tasks.mcq",        "mcq"),
+        # VLM (image + text)
+        "radbench":         (load_radbench,          "tasks.vqa",        "vqa"),
         "vqa_med_2019":     (load_vqa_med_2019,      "tasks.vqa",        "vqa"),
         "radimagenet_vqa":  (load_radimagenet_vqa,   "tasks.vqa",        "vqa"),
+        # Text-only specialised
         "label_extraction": (load_label_extraction,  "tasks.extraction", "extraction"),
         "radiorag":         (load_radiorag,           "tasks.open_qa",    "open_qa"),
     }
@@ -74,13 +77,28 @@ def _resolve_benchmarks(config: dict, registry: dict) -> list:
     return names
 
 
-def _run_one(benchmark: str, registry: dict, config: dict, client) -> None:
-    """Load data, run the task, and evaluate for a single benchmark."""
+def _build_judge_client(config: dict):
+    """Return a MedicalLLMClient for the judge model, or None if not configured."""
+    judge_cfg = config.get("judge")
+    if not judge_cfg:
+        return None
+    # Build a minimal config dict for the judge, reusing top-level defaults where missing
+    merged = {
+        "server": judge_cfg,
+        "benchmark_settings": config.get("benchmark_settings", {}),
+    }
+    try:
+        return MedicalLLMClient(merged)
+    except Exception as e:
+        print(f"  Warning: could not create judge client: {e}")
+        return None
+
+
+def _run_one(benchmark: str, registry: dict, config: dict, client, judge_client) -> dict:
+    """Load data, run the task, and evaluate for a single benchmark. Returns metrics dict."""
     loader, task_module_path, eval_type = registry[benchmark]
 
-    print(f"\n{'='*60}")
-    print(f"  Benchmark: {benchmark.upper()}")
-    print(f"{'='*60}")
+    print(f"\n--- {benchmark.upper()} ---")
 
     limit = config.get("benchmark_settings", {}).get("limit_samples", None)
     data = loader(limit=limit)
@@ -92,43 +110,40 @@ def _run_one(benchmark: str, registry: dict, config: dict, client) -> None:
     task = importlib.import_module(task_module_path)
     task.run(config, client, data, results_path)
 
-    _evaluate(benchmark, eval_type, results_path, report_path, config)
+    return _evaluate(benchmark, eval_type, results_path, report_path, judge_client)
 
 
-def _evaluate(benchmark: str, eval_type: str, results_path: str, report_path: str, config: dict) -> None:
-    """Run the appropriate evaluation and print a terminal report."""
+def _evaluate(benchmark: str, eval_type: str, results_path: str, report_path: str, judge_client) -> dict:
+    """Run the appropriate evaluation and return a metrics dict."""
+    run_judge = judge_client is not None
     try:
         if eval_type == "mcq":
             from evaluate import write_report_jsonl, print_terminal_report
             report = write_report_jsonl(results_path, out_path=report_path)
             print_terminal_report(results_path)
-            print(f"Auswertung gespeichert: {report['path']}")
+            return {"accuracy_pct": report.get("accuracy_pct")}
 
         elif eval_type == "vqa":
             from evaluate import write_vqa_report_jsonl, print_vqa_terminal_report
-            report = write_vqa_report_jsonl(results_path, out_path=report_path)
-            print_vqa_terminal_report(results_path)
-            print(f"Auswertung gespeichert: {report_path}")
-            print("Tipp: LLM-as-a-Judge für open-ended Fragen nachträglich:")
-            print(f"  python evaluate.py {results_path} --type vqa --judge")
+            report = write_vqa_report_jsonl(results_path, out_path=report_path, client=judge_client, run_judge=run_judge)
+            print_vqa_terminal_report(results_path, report=report)
+            return {k: v for k, v in report.items() if k != "path"}
 
         elif eval_type == "extraction":
             from evaluate import write_extraction_report_jsonl, print_extraction_terminal_report
             report = write_extraction_report_jsonl(results_path, out_path=report_path)
             print_extraction_terminal_report(results_path)
-            print(f"Auswertung gespeichert: {report_path}")
+            return {"micro_f1_pct": report.get("micro_f1_pct")}
 
         elif eval_type == "open_qa":
             from evaluate import write_open_qa_report_jsonl, print_open_qa_terminal_report
-            # Automatic metrics only; LLM-as-a-Judge requires --judge flag
-            report = write_open_qa_report_jsonl(results_path, out_path=report_path)
-            print_open_qa_terminal_report(results_path)
-            print(f"Auswertung gespeichert: {report_path}")
-            print("Tipp: LLM-as-a-Judge (primäre Metrik laut Paper) nachträglich:")
-            print(f"  python evaluate.py {results_path} --type open_qa --judge")
+            report = write_open_qa_report_jsonl(results_path, out_path=report_path, client=judge_client, run_judge=run_judge)
+            print_open_qa_terminal_report(results_path, report=report)
+            return {k: v for k, v in report.items() if k != "path"}
 
     except Exception as e:
-        print(f"Warnung: Auswertung für '{benchmark}' fehlgeschlagen: {e}")
+        print(f"  Warning: evaluation failed: {e}")
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -146,26 +161,33 @@ def main():
     registry = _registry()
     benchmarks = _resolve_benchmarks(config, registry)
 
-    if len(benchmarks) > 1:
-        print(f"Multi-Benchmark Modus: {benchmarks}")
-
     client = MedicalLLMClient(config)
+    judge_client = _build_judge_client(config)
+    if judge_client:
+        print(f"Judge model: {judge_client.model}")
+    else:
+        print("No judge model configured — LLM-as-a-Judge will be skipped.")
+        print("To enable: add a 'judge:' section to config.yaml")
 
     summary = []
     for benchmark in benchmarks:
         try:
-            _run_one(benchmark, registry, config, client)
-            summary.append((benchmark, "OK"))
+            metrics = _run_one(benchmark, registry, config, client, judge_client)
+            summary.append((benchmark, metrics, None))
         except Exception as e:
-            print(f"\nFehler bei Benchmark '{benchmark}': {e}")
-            summary.append((benchmark, f"FEHLER: {e}"))
+            print(f"\nError in benchmark '{benchmark}': {e}")
+            summary.append((benchmark, {}, str(e)))
 
-    if len(benchmarks) > 1:
-        print(f"\n{'='*60}")
-        print("  Zusammenfassung")
-        print(f"{'='*60}")
-        for name, status in summary:
-            print(f"  {name:<20} {status}")
+    print(f"\n{'='*60}")
+    print("  RESULTS")
+    print(f"{'='*60}")
+    for name, metrics, err in summary:
+        if err:
+            print(f"  {name:<22} ERROR: {err}")
+        else:
+            metric_str = "  ".join(f"{k}: {v:.2f}%" if isinstance(v, float) else f"{k}: {v}" for k, v in metrics.items())
+            print(f"  {name:<22} {metric_str if metric_str else 'no metrics'}")
+    print(f"{'='*60}")
 
 
 if __name__ == "__main__":

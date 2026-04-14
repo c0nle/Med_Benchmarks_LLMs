@@ -1,11 +1,12 @@
 """
-VQA Task Runner – used for VQA-Med-2019 and RadImageNet-VQA.
+VQA Task Runner – used for RadBench, VQA-Med-2019, and RadImageNet-VQA.
 
-RadImageNet-VQA has two question types (see Zheng et al., 2023 / paper):
-  - MCQ  : option letter extracted with rule-based parser → accuracy
-  - Open : free-text answer → evaluated with LLM-as-a-Judge
+RadImageNet-VQA and RadBench have multiple question types:
+  - MCQ     : option letter extracted with rule-based parser → accuracy
+  - Yes/No  : exact-match accuracy
+  - Open    : free-text answer → evaluated with LLM-as-a-Judge
 
-VQA-Med-2019 is open-ended only.
+VQA-Med-2019 is open-ended only (BLEU primary metric).
 
 Item schema (from vision_benchmarks.py):
   { id, benchmark, question, answer, image (PIL|None), image_format, meta }
@@ -63,23 +64,23 @@ def _build_mcq_prompt(item: dict) -> str:
         f"{opt['key']}: {opt['value']}" for opt in item.get("options", [])
     )
     return (
-        f"Frage zum medizinischen Bild: {item['question']}\n"
-        f"Optionen: {options_str}\n"
-        "Antworte nur mit dem korrekten Buchstaben (A/B/C/D)."
+        f"Question about the medical image: {item['question']}\n"
+        f"Options: {options_str}\n"
+        "Reply with only the correct letter (A/B/C/D)."
     )
 
 
 def _build_yes_no_prompt(item: dict) -> str:
     return (
-        f"Frage zum medizinischen Bild: {item['question']}\n"
-        "Antworte nur mit 'Yes' oder 'No'."
+        f"Question about the medical image: {item['question']}\n"
+        "Reply with only 'Yes' or 'No'."
     )
 
 
 def _build_open_prompt(item: dict) -> str:
     return (
-        f"Frage zum medizinischen Bild: {item['question']}\n"
-        "Antworte mit einer kurzen, präzisen medizinischen Antwort."
+        f"Question: {item['question']}\n"
+        "Answer using key medical terms only. No full sentences, no explanations — just the essential term(s) in English."
     )
 
 
@@ -114,7 +115,7 @@ def run(config: dict, client, data: list, results_path: str) -> str:
 
     total = len(data)
     remaining = sum(1 for item in data if str(item.get("id")) not in completed_ids)
-    print(f"VQA Benchmark: {total} Fragen ({remaining} neu zu bearbeiten)...")
+    print(f"  {total} questions  ({remaining} remaining)...")
 
     start = time.time()
     processed_new = 0
@@ -142,7 +143,6 @@ def run(config: dict, client, data: list, results_path: str) -> str:
             # Encode image if present
             image_b64 = _pil_to_b64(item.get("image"), fmt=item.get("image_format", "jpeg"))
 
-            print(f"[{idx}/{total}] ID: {item_id} ({q_type}, {'bild' if image_b64 else 'kein bild'})...")
 
             if image_b64:
                 model_answer = client.ask_with_image(
@@ -184,8 +184,10 @@ def run(config: dict, client, data: list, results_path: str) -> str:
                 elapsed = time.time() - start
                 rate = processed_new / elapsed if elapsed > 0 else 0.0
                 eta_s = int((remaining - processed_new) / rate) if rate > 0 else -1
-                eta = f"{eta_s//3600:02d}:{(eta_s%3600)//60:02d}:{eta_s%60:02d}" if eta_s >= 0 else "?"
-                print(f"Progress: {processed_new}/{remaining}, Errors: {errors}, Rate: {rate:.2f} q/s, ETA: {eta}")
+                eta = f"{eta_s//60:02d}:{eta_s%60:02d}" if eta_s >= 0 else "?"
+                pct = int(processed_new / remaining * 100) if remaining > 0 else 100
+                print(f"  [{processed_new:>{len(str(remaining))}}/{remaining}] {pct:3d}%  {rate:.1f} q/s  ETA {eta}  errors: {errors}")
 
-    print(f"VQA Benchmark abgeschlossen. Ergebnisse in {results_path}")
+    elapsed_total = time.time() - start
+    print(f"  Done: {processed_new}/{remaining}  errors: {errors}  ({elapsed_total/60:.1f} min)")
     return results_path
