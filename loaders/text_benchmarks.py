@@ -134,14 +134,17 @@ def _format_rar_item(item: dict, idx: int) -> dict:
 
 def load_rar(limit=None):
     """
-    Loads the RaR (Reasoning and Radiology) benchmark.
+    Loads the RaR (Reasoning and Radiology) benchmark (n=65 board-exam questions).
+
+    RaR is NOT on HuggingFace. Download the dataset from the paper authors:
+      Paper: Wind et al. 2025, npj Digital Medicine
+      https://www.nature.com/articles/s41746-025-02250-5
 
     Priority:
     1) Local parquet via env var RAR_PARQUET_PATH
     2) Auto-detect data/rar*.parquet
-    3) Hugging Face dataset (MedRAG/RaR or similar)
     """
-    print("--- Lade RaR (Reasoning and Radiology) ---")
+    print("--- Lade RaR (Reasoning and Radiology, n=65) ---")
 
     local_path = os.getenv("RAR_PARQUET_PATH")
     if not local_path:
@@ -154,142 +157,23 @@ def load_rar(limit=None):
                 local_path = candidate
                 break
 
-    if local_path:
-        dataset = _load_local_parquet(local_path)
-    else:
-        try:
-            dataset = load_dataset("MedRAG/RaR", split="test")
-        except Exception:
-            try:
-                dataset = load_dataset("RaR-Medical/RaR", split="test")
-            except Exception as e:
-                raise RuntimeError(
-                    "RaR konnte nicht geladen werden.\n\n"
-                    "Fix:\n"
-                    "1) Parquet-Datei bereitstellen und Pfad setzen:\n"
-                    "   export RAR_PARQUET_PATH=/pfad/zur/rar-test.parquet\n"
-                    f"Originalfehler: {type(e).__name__}: {e}"
-                ) from e
+    if local_path is None:
+        raise RuntimeError(
+            "RaR konnte nicht geladen werden.\n\n"
+            "Das Dataset ist NICHT auf HuggingFace. Bitte:\n"
+            "1) Daten beim Autor anfragen / vom Paper herunterladen:\n"
+            "   https://www.nature.com/articles/s41746-025-02250-5\n"
+            "2) Als Parquet ablegen und Pfad setzen:\n"
+            "   export RAR_PARQUET_PATH=/pfad/zur/rar-test.parquet\n"
+            "   (Format: Spalten 'question', 'options'/'choices', 'answer')\n"
+        )
+
+    dataset = _load_local_parquet(local_path)
 
     if limit:
         dataset = dataset.select(range(min(limit, len(dataset))))
 
     return [_format_rar_item(item, idx) for idx, item in enumerate(dataset)]
-
-
-# ---------------------------------------------------------------------------
-# RadBench – Clinical Decision Making in Radiology
-# ---------------------------------------------------------------------------
-
-def _format_radbench_item(item: dict, idx: int) -> dict:
-    """Normalise a RadBench row into the shared MCQ schema."""
-    # RadBench (UCSC-VLAA) typically has fields: question, choices, gt, task_name
-    choices_raw = item.get("choices") or item.get("options") or {}
-    if isinstance(choices_raw, dict):
-        options = [{"key": k, "value": v} for k, v in choices_raw.items()]
-    elif isinstance(choices_raw, list):
-        if choices_raw and isinstance(choices_raw[0], str):
-            keys = ["A", "B", "C", "D", "E"]
-            options = [{"key": keys[i], "value": v} for i, v in enumerate(choices_raw)]
-        else:
-            options = choices_raw
-    else:
-        options = []
-
-    answer = str(
-        item.get("gt") or item.get("answer") or item.get("correct_answer") or item.get("label") or ""
-    ).strip()
-    if len(answer) > 1:
-        answer = answer[0].upper()
-
-    return {
-        "id": str(item.get("id") or item.get("qid") or f"radbench-{idx}"),
-        "benchmark": "RadBench",
-        "question": item.get("question") or item.get("Question") or "",
-        "options": options,
-        "correct_answer": answer.upper(),
-        "meta": {
-            "task_name": item.get("task_name") or item.get("task") or "",
-            "source": "RadBench",
-        },
-    }
-
-
-def load_radbench(limit=None):
-    """
-    Loads the RadBench benchmark (MCQ subset, closed-ended questions).
-
-    RadBench (harrison.ai, https://harrison-ai.github.io/radbench/) contains
-    497 questions total: 377 closed-ended MCQ + 120 open-ended.
-    We load only the closed-ended MCQ subset for letter-accuracy evaluation.
-
-    Priority:
-    1) Local parquet via env var RADBENCH_PARQUET_PATH
-    2) Auto-detect data/radbench*.parquet
-    3) Hugging Face harrison-ai/radbench  (or github.com/harrison-ai/radbench)
-
-    Note: harrison-ai RadBench is NOT the same as UCSC-VLAA/RadBench.
-    """
-    print("--- Lade RadBench (harrison.ai – Klinische Entscheidungsfindung Radiologie) ---")
-
-    local_path = os.getenv("RADBENCH_PARQUET_PATH")
-    if not local_path:
-        for candidate in (
-            "data/radbench-test.parquet",
-            "data/radbench_test.parquet",
-            "data/radbench.parquet",
-        ):
-            if Path(candidate).exists():
-                local_path = candidate
-                break
-
-    if local_path:
-        dataset = _load_local_parquet(local_path)
-    else:
-        hf_candidates = [
-            ("harrison-ai/radbench", "test"),
-            ("harrison-ai/radbench", "train"),
-            ("harrison-ai/radbench", None),         # no split
-        ]
-        dataset = None
-        last_err = None
-        for hf_id, split in hf_candidates:
-            try:
-                if split:
-                    dataset = load_dataset(hf_id, split=split)
-                else:
-                    ds = load_dataset(hf_id)
-                    dataset = ds[list(ds.keys())[0]]
-                print(f"  Geladen von HuggingFace: {hf_id}")
-                break
-            except Exception as e:
-                last_err = e
-        if dataset is None:
-            raise RuntimeError(
-                "RadBench (harrison.ai) konnte nicht geladen werden.\n\n"
-                "Fix:\n"
-                "1) Parquet-Datei von https://github.com/harrison-ai/radbench herunterladen.\n"
-                "2) Pfad setzen:\n"
-                "   export RADBENCH_PARQUET_PATH=/pfad/zur/radbench.parquet\n"
-                "   (Format: Spalten 'question', 'choices'/'options', 'gt'/'answer')\n"
-                f"Originalfehler: {type(last_err).__name__}: {last_err}"
-            ) from last_err
-
-    # Keep only closed-ended / MCQ items
-    mcq_items = []
-    for idx, item in enumerate(dataset):
-        has_choices = bool(item.get("choices") or item.get("options"))
-        has_answer_key = bool(item.get("gt") or item.get("answer") or item.get("correct_answer"))
-        if has_choices and has_answer_key:
-            mcq_items.append((idx, item))
-
-    if not mcq_items:
-        mcq_items = list(enumerate(dataset))
-
-    if limit:
-        mcq_items = mcq_items[:limit]
-
-    return [_format_radbench_item(item, idx) for idx, item in mcq_items]
 
 
 # ---------------------------------------------------------------------------

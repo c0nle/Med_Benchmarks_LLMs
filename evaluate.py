@@ -141,41 +141,63 @@ def write_report_jsonl(
 def print_terminal_report(results_csv_path: str = "results/benchmark_results.csv") -> None:
     df = pd.read_csv(results_csv_path)
     scored = score_results(df)
-    metrics, dist, conf = compute_reports(scored)
+    metrics, _, _ = compute_reports(scored)
 
     accuracy_row = metrics.loc[metrics["metric"] == "accuracy_pct", "value"]
     accuracy_pct = float(accuracy_row.iloc[0]) if not accuracy_row.empty else 0.0
     rows = int(metrics.loc[metrics["metric"] == "rows", "value"].iloc[0]) if not metrics.empty else len(df)
 
-    print("=== Auswertung ===")
-    print(f"Rows: {rows}")
-    print(f"Accuracy: {accuracy_pct:.2f}%")
-
-    print("\nAntwortverteilung (Model):")
-    dist_show = dist.copy()
-    dist_show["pct"] = dist_show["pct"].map(lambda x: f"{float(x):.2f}%" if x is not None else "")
-    print(dist_show.to_string(index=False))
-
-    print("\nConfusion Matrix (Correct x Model):")
-    print(conf.to_string())
-
-    # Show a few wrong examples to debug quickly (HPC-friendly)
-    wrong = scored[~scored["is_correct"]].copy()
-    if len(wrong) > 0:
-        cols = [c for c in ["id", "correct_answer_norm", "model_answer_norm"] if c in wrong.columns]
-        print("\nBeispiele (falsch, max 10):")
-        print(wrong[cols].head(10).to_string(index=False))
+    print(f"  Accuracy: {accuracy_pct:.2f}%  ({rows} questions)")
 
 
 # ===========================================================================
 # VQA Evaluation
 # ===========================================================================
 
-def _normalise_text(text: str) -> str:
-    """Lowercase, strip punctuation and extra whitespace."""
+def _normalise_text(text: str, stem: bool = False) -> str:
+    """
+    Basic normalisation: lowercase, hyphen/slash → space, strip punctuation.
+    Used for exact-match, token-F1, and WBSS.
+    """
     text = str(text).lower().strip()
+    text = text.replace("-", " ").replace("/", " ")
     text = text.translate(str.maketrans("", "", string.punctuation))
     return " ".join(text.split())
+
+
+def _paper_tokenise(text: str) -> list:
+    """
+    Exact preprocessing from the VQA-Med-2019/2020 official evaluator
+    (Ben Abacha et al., ImageCLEF 2019; source: Evaluator-VQA-Med-2020.py):
+      1. Lowercase
+      2. Strip string.punctuation
+      3. word_tokenize (NLTK)
+      4. Remove English stopwords           ← 'no' IS a stopword → removed!
+      5. Snowball stemming
+
+    Note: because 'no' is an NLTK English stopword, answers of 'no' become []
+    and receive BLEU=0 even when correct. This is a quirk of the official script.
+    """
+    text = str(text).lower()
+    text = text.translate(str.maketrans("", "", string.punctuation))
+    try:
+        from nltk.tokenize import word_tokenize
+        tokens = word_tokenize(text)
+    except Exception:
+        tokens = text.split()
+    try:
+        from nltk.corpus import stopwords as _sw
+        sw = set(_sw.words("english"))
+        tokens = [t for t in tokens if t not in sw]
+    except Exception:
+        pass
+    try:
+        from nltk.stem import SnowballStemmer
+        stemmer = SnowballStemmer("english")
+        tokens = [stemmer.stem(t) for t in tokens]
+    except Exception:
+        pass
+    return tokens
 
 
 def _token_f1(prediction: str, reference: str) -> float:
@@ -210,11 +232,51 @@ def score_vqa_mcq(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _vqa_med_bleu(prediction: str, reference: str) -> float:
+    """
+    Per-item BLEU exactly as in the VQA-Med-2019/2020 official evaluator
+    (Ben Abacha et al., ImageCLEF 2019; source: Evaluator-VQA-Med-2020.py):
+      - _paper_tokenise(): lowercase → strip punctuation → word_tokenize
+                           → remove English stopwords → Snowball stem
+      - sentence_bleu with SmoothingFunction().method0
+      - Default weights (0.25, 0.25, 0.25, 0.25) = BLEU-4
+
+    Known quirk: 'no' is an NLTK stopword → tokenises to [] → always BLEU=0,
+    even when correct. This matches the official evaluator behaviour exactly.
+    Top systems 2019: BLEU ~64%, Accuracy ~62%.
+    """
+    try:
+        from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
+        pred_tokens = _paper_tokenise(prediction)
+        ref_tokens  = _paper_tokenise(reference)
+        # Official evaluator: if BOTH are empty after preprocessing (e.g. "no" vs "no",
+        # since "no" is an English stopword), assign score = 1.0 (exact match).
+        if len(ref_tokens) == 0 and len(pred_tokens) == 0:
+            return 1.0
+        if not pred_tokens or not ref_tokens:
+            return 0.0
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            return sentence_bleu(
+                [ref_tokens], pred_tokens,
+                smoothing_function=SmoothingFunction().method0,
+            )
+    except ImportError:
+        return _token_f1(prediction, reference)
+
+
+def _corpus_bleu(predictions: list, references: list) -> float:
+    """Average per-item VQA-Med BLEU across all pairs (paper methodology)."""
+    if not predictions:
+        return 0.0
+    scores = [_vqa_med_bleu(p, r) for p, r in zip(predictions, references)]
+    return sum(scores) / len(scores)
+
+
 def _sentence_bleu(prediction: str, reference: str) -> float:
     """
-    Compute corpus-level BLEU (1–4 gram) for a single prediction/reference pair.
-    Uses NLTK if available, else falls back to unigram overlap.
-    This matches the primary metric of VQA-Med-2019 (ImageCLEF 2019).
+    Sentence-level BLEU for per-item storage (not the paper's primary metric).
+    Used only to populate the per-row 'bleu' column; aggregate via _corpus_bleu.
     """
     try:
         from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
@@ -227,30 +289,55 @@ def _sentence_bleu(prediction: str, reference: str) -> float:
             warnings.simplefilter("ignore")
             return sentence_bleu([ref_tokens], pred_tokens, smoothing_function=sf)
     except ImportError:
-        # NLTK not installed: fall back to unigram F1
         return _token_f1(prediction, reference)
+
+
+def _wbss(prediction: str, reference: str) -> float:
+    """
+    Word-Based Semantic Similarity (WBSS) via Wu-Palmer similarity on WordNet.
+    Used in VQA-Med-2019 alongside BLEU (Ben Abacha et al., ImageCLEF 2019).
+    Requires: nltk + nltk.download('wordnet') + nltk.download('omw-1.4')
+    Returns 0.0 if WordNet is unavailable.
+    """
+    try:
+        from nltk.corpus import wordnet as wn
+        pred_tokens = _normalise_text(prediction).split()
+        ref_tokens = _normalise_text(reference).split()
+        if not pred_tokens or not ref_tokens:
+            return 0.0
+
+        def best_wup(word, candidates):
+            syns_w = wn.synsets(word)
+            if not syns_w:
+                return 0.0
+            best = 0.0
+            for cand in candidates:
+                for sc in wn.synsets(cand):
+                    for sw in syns_w:
+                        sim = sw.wup_similarity(sc)
+                        if sim and sim > best:
+                            best = sim
+            return best
+
+        p2r = sum(best_wup(w, ref_tokens) for w in pred_tokens) / len(pred_tokens)
+        r2p = sum(best_wup(w, pred_tokens) for w in ref_tokens) / len(ref_tokens)
+        if p2r + r2p == 0:
+            return 0.0
+        return 2 * p2r * r2p / (p2r + r2p)
+    except Exception:
+        return 0.0
 
 
 def score_vqa_open(df: pd.DataFrame) -> pd.DataFrame:
     """
     Score open-ended VQA rows.
 
-    Metrics (per paper):
-    - VQA-Med-2019:    BLEU (primary) + Accuracy/Exact Match  (ImageCLEF 2019)
-    - RadImageNet-VQA: Exact Match (closed yes/no) or LLM-as-a-Judge (open pathology)
-
-    Columns added: exact_match, bleu, token_f1
+    Primary metric: WBSS (Wu-Palmer semantic similarity via WordNet).
     LLM-as-a-Judge is done separately via evaluate_vqa_with_judge().
     """
     df = df.copy()
-    df["exact_match"] = df.apply(
-        lambda r: _exact_match(str(r["model_answer"]), str(r["reference_answer"])), axis=1
-    )
-    df["bleu"] = df.apply(
-        lambda r: _sentence_bleu(str(r["model_answer"]), str(r["reference_answer"])), axis=1
-    )
-    df["token_f1"] = df.apply(
-        lambda r: _token_f1(str(r["model_answer"]), str(r["reference_answer"])), axis=1
+    df["wbss"] = df.apply(
+        lambda r: _wbss(str(r["model_answer"]), str(r["reference_answer"])), axis=1
     )
     return df
 
@@ -357,17 +444,10 @@ def write_vqa_report_jsonl(
             if run_judge and client is not None:
                 scored_open = evaluate_vqa_with_judge(scored_open, client)
 
-            em = float(scored_open["exact_match"].mean() * 100)
-            avg_bleu = float(scored_open["bleu"].mean() * 100)
-            avg_f1 = float(scored_open["token_f1"].mean() * 100)
-            results["open_exact_match_pct"] = round(em, 2)
-            results["open_bleu_pct"] = round(avg_bleu, 2)
-            results["open_token_f1_pct"] = round(avg_f1, 2)
+            avg_wbss = float(scored_open["wbss"].mean() * 100)
+            results["open_wbss_pct"] = round(avg_wbss, 2)
 
-            # BLEU is the primary metric for VQA-Med-2019 (ImageCLEF 2019)
-            f.write(json.dumps({"type": "metric", "subset": "open", "metric": "bleu_pct", "value": round(avg_bleu, 2), "note": "primary metric for VQA-Med-2019"}, ensure_ascii=False) + "\n")
-            f.write(json.dumps({"type": "metric", "subset": "open", "metric": "exact_match_pct", "value": round(em, 2)}, ensure_ascii=False) + "\n")
-            f.write(json.dumps({"type": "metric", "subset": "open", "metric": "token_f1_pct", "value": round(avg_f1, 2)}, ensure_ascii=False) + "\n")
+            f.write(json.dumps({"type": "metric", "subset": "open", "metric": "wbss_pct", "value": round(avg_wbss, 2), "note": "Wu-Palmer semantic similarity via WordNet"}, ensure_ascii=False) + "\n")
             f.write(json.dumps({"type": "metric", "subset": "open", "metric": "rows", "value": len(scored_open)}, ensure_ascii=False) + "\n")
 
             # LLM-as-a-Judge (binary 0/1) — RadImageNet-VQA open-ended metric
@@ -387,11 +467,10 @@ def write_vqa_report_jsonl(
     return results
 
 
-def print_vqa_terminal_report(results_csv_path: str) -> None:
+def print_vqa_terminal_report(results_csv_path: str, report: dict = None) -> None:
     df = pd.read_csv(results_csv_path)
     q_type_col = "question_type" if "question_type" in df.columns else None
 
-    print("=== VQA Auswertung ===")
     if q_type_col:
         mcq_df = df[df[q_type_col] == "mcq"].copy()
         yes_no_df = df[df[q_type_col] == "yes_no"].copy()
@@ -401,29 +480,28 @@ def print_vqa_terminal_report(results_csv_path: str) -> None:
         yes_no_df = pd.DataFrame()
         open_df = df.copy()
 
+    parts = []
     if not mcq_df.empty:
         scored = score_vqa_mcq(mcq_df)
         acc = float(scored["is_correct"].mean() * 100)
-        print(f"MCQ    – Rows: {len(scored)}, Accuracy: {acc:.2f}%")
+        parts.append(f"MCQ Accuracy: {acc:.2f}% ({len(scored)} questions)")
 
     if not yes_no_df.empty:
         yn_acc = float(yes_no_df.apply(
             lambda r: _normalise_text(str(r["model_answer"])) == _normalise_text(str(r["reference_answer"])), axis=1
         ).mean() * 100)
-        print(f"Yes/No – Rows: {len(yes_no_df)}, Accuracy: {yn_acc:.2f}%  (exact-match, RadImageNet-VQA closed)")
+        parts.append(f"Yes/No Accuracy: {yn_acc:.2f}% ({len(yes_no_df)} questions)")
 
     if not open_df.empty:
         scored = score_vqa_open(open_df)
-        em = float(scored["exact_match"].mean() * 100)
-        bleu = float(scored["bleu"].mean() * 100)
-        f1 = float(scored["token_f1"].mean() * 100)
-        print(f"Open – Rows: {len(scored)}, BLEU: {bleu:.2f}% (VQA-Med primary), Exact Match: {em:.2f}%, Token F1: {f1:.2f}%")
-        if "judge_correct" in scored.columns:
-            valid = scored["judge_correct"].dropna()
-            if not valid.empty:
-                print(f"       LLM-Judge Accuracy: {float(valid.mean()*100):.2f}% (binary, RadImageNet-VQA primary)")
-        else:
-            print("(LLM-as-a-Judge: python evaluate.py <csv> --type vqa --judge  →  RadImageNet-VQA open-ended primary)")
+        wbss = float(scored["wbss"].mean() * 100)
+        judge_str = ""
+        if report and "open_judge_accuracy_pct" in report:
+            judge_str = f"  LLM-Judge: {report['open_judge_accuracy_pct']:.2f}%"
+        parts.append(f"Open WBSS: {wbss:.2f}% ({len(scored)} questions){judge_str}")
+
+    for p in parts:
+        print(f"  {p}")
 
 
 # ===========================================================================
@@ -517,21 +595,7 @@ def print_extraction_terminal_report(results_csv_path: str) -> None:
     df = pd.read_csv(results_csv_path)
     scored = score_extraction(df)
     micro_p, micro_r, micro_f1 = _micro_prf(scored)
-    print("=== Label Extraction Auswertung (RadGraph-style Micro F1) ===")
-    print(f"Rows: {len(scored)}")
-    print(f"Micro Precision: {micro_p:.2f}%")
-    print(f"Micro Recall:    {micro_r:.2f}%")
-    print(f"Micro F1:        {micro_f1:.2f}%  ← primary metric")
-
-    # Show worst items by per-item F1 for debugging
-    scored["item_f1"] = scored.apply(
-        lambda r: (2 * r["tp"] / (2 * r["tp"] + r["fp"] + r["fn"])) if (2 * r["tp"] + r["fp"] + r["fn"]) > 0 else 0.0,
-        axis=1
-    )
-    worst = scored.nsmallest(10, "item_f1")[["id", "item_f1", "reference_entities", "model_entities"]]
-    if not worst.empty:
-        print("\nSchlechteste 10 (nach per-item F1):")
-        print(worst.to_string(index=False))
+    print(f"  Micro F1: {micro_f1:.2f}%  P: {micro_p:.2f}%  R: {micro_r:.2f}%  ({len(scored)} questions)")
 
 
 # ===========================================================================
@@ -554,27 +618,21 @@ def write_open_qa_report_jsonl(
     Tayebi Arasteh et al. 2024/2025 — human expert baseline: ~63% accuracy.
     """
     df = pd.read_csv(results_csv_path)
-    scored = score_vqa_open(df)   # reuse: adds exact_match, bleu, token_f1
+    scored = score_vqa_open(df)   # adds wbss
 
     if run_judge and client is not None:
         scored = evaluate_vqa_with_judge(scored, client)
 
-    em = float(scored["exact_match"].mean() * 100)
-    avg_bleu = float(scored["bleu"].mean() * 100)
-    avg_f1 = float(scored["token_f1"].mean() * 100)
+    avg_wbss = float(scored["wbss"].mean() * 100)
 
     result = {
         "path": out_path,
-        "exact_match_pct": round(em, 2),
-        "bleu_pct": round(avg_bleu, 2),
-        "token_f1_pct": round(avg_f1, 2),
+        "wbss_pct": round(avg_wbss, 2),
     }
 
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(json.dumps({"type": "metric", "metric": "rows", "value": len(scored)}, ensure_ascii=False) + "\n")
-        f.write(json.dumps({"type": "metric", "metric": "bleu_pct", "value": round(avg_bleu, 2)}, ensure_ascii=False) + "\n")
-        f.write(json.dumps({"type": "metric", "metric": "exact_match_pct", "value": round(em, 2)}, ensure_ascii=False) + "\n")
-        f.write(json.dumps({"type": "metric", "metric": "token_f1_pct", "value": round(avg_f1, 2)}, ensure_ascii=False) + "\n")
+        f.write(json.dumps({"type": "metric", "metric": "wbss_pct", "value": round(avg_wbss, 2)}, ensure_ascii=False) + "\n")
 
         if "judge_correct" in scored.columns:
             valid = scored["judge_correct"].dropna()
@@ -597,26 +655,14 @@ def write_open_qa_report_jsonl(
     return result
 
 
-def print_open_qa_terminal_report(results_csv_path: str) -> None:
+def print_open_qa_terminal_report(results_csv_path: str, report: dict = None) -> None:
     df = pd.read_csv(results_csv_path)
     scored = score_vqa_open(df)
-    em = float(scored["exact_match"].mean() * 100)
-    avg_bleu = float(scored["bleu"].mean() * 100)
-    avg_f1 = float(scored["token_f1"].mean() * 100)
-
-    print("=== Open-ended QA Auswertung (RadioRAG) ===")
-    print(f"Rows:        {len(scored)}")
-    print(f"BLEU:        {avg_bleu:.2f}%")
-    print(f"Exact Match: {em:.2f}%")
-    print(f"Token F1:    {avg_f1:.2f}%")
-
-    if "judge_correct" in scored.columns:
-        valid = scored["judge_correct"].dropna()
-        if not valid.empty:
-            print(f"LLM-Judge:   {float(valid.mean()*100):.2f}%  ← primary metric (human baseline ~63%)")
-    else:
-        print("Tipp: LLM-as-a-Judge (primäre Metrik) ausführen:")
-        print(f"  python evaluate.py {results_csv_path} --type open_qa --judge")
+    avg_wbss = float(scored["wbss"].mean() * 100)
+    judge_str = ""
+    if report and "judge_accuracy_pct" in report:
+        judge_str = f"  LLM-Judge: {report['judge_accuracy_pct']:.2f}%"
+    print(f"  WBSS: {avg_wbss:.2f}% ({len(scored)} questions){judge_str}")
 
 
 # ===========================================================================

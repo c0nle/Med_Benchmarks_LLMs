@@ -1,11 +1,13 @@
 """
-MCQ Task Runner – used for MedQA, RaR, and RadBench.
+MCQ Task Runner – used for MedQA and RaR.
 
-All three benchmarks share the same multiple-choice schema:
+Both benchmarks share the same multiple-choice schema:
   item = { id, benchmark, question, options: [{key, value}], correct_answer, meta }
 
 Results CSV columns: id, benchmark, question, correct_answer, model_answer
 Evaluation: letter extraction → accuracy (handled by evaluate.py)
+
+Note: RadBench is a VLM benchmark (X-ray images) and goes through tasks/vqa.py.
 """
 import os
 import csv
@@ -39,7 +41,7 @@ def run(config: dict, client, data: list, results_path: str) -> str:
 
     total = len(data)
     remaining = sum(1 for item in data if str(item.get("id")) not in completed_ids)
-    print(f"MCQ Benchmark: {total} Fragen ({remaining} neu zu bearbeiten)...")
+    print(f"  {total} questions  ({remaining} remaining)...")
 
     start = time.time()
     processed_new = 0
@@ -60,12 +62,11 @@ def run(config: dict, client, data: list, results_path: str) -> str:
                 f"{opt['key']}: {opt['value']}" for opt in item.get("options", [])
             )
             prompt = (
-                f"Frage: {item['question']}\n"
-                f"Optionen: {options_str}\n"
-                "Antworte nur mit dem korrekten Buchstaben (A/B/C/D)."
+                f"Question: {item['question']}\n"
+                f"Options: {options_str}\n"
+                "Reply with only the correct letter (A/B/C/D)."
             )
 
-            print(f"[{idx}/{total}] ID: {item_id}...")
             model_answer = client.ask_question(prompt)
 
             if isinstance(model_answer, str) and model_answer.startswith("Error:"):
@@ -99,8 +100,10 @@ def run(config: dict, client, data: list, results_path: str) -> str:
                 elapsed = time.time() - start
                 rate = processed_new / elapsed if elapsed > 0 else 0.0
                 eta_s = int((remaining - processed_new) / rate) if rate > 0 else -1
-                eta = f"{eta_s//3600:02d}:{(eta_s%3600)//60:02d}:{eta_s%60:02d}" if eta_s >= 0 else "?"
-                print(f"Progress: {processed_new}/{remaining}, Errors: {errors}, Rate: {rate:.2f} q/s, ETA: {eta}")
+                eta = f"{eta_s//60:02d}:{eta_s%60:02d}" if eta_s >= 0 else "?"
+                pct = int(processed_new / remaining * 100) if remaining > 0 else 100
+                print(f"  [{processed_new:>{len(str(remaining))}}/{remaining}] {pct:3d}%  {rate:.1f} q/s  ETA {eta}  errors: {errors}")
 
-    print(f"MCQ Benchmark abgeschlossen. Ergebnisse in {results_path}")
+    elapsed_total = time.time() - start
+    print(f"  Done: {processed_new}/{remaining}  errors: {errors}  ({elapsed_total/60:.1f} min)")
     return results_path

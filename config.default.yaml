@@ -6,9 +6,22 @@ server:
   model_name: "meta-llama/Meta-Llama-3.1-8B-Instruct"
 
   verify_ssl: false
-  api_key_env: "MED_SERVER_API_KEY"
+  api_key_env: "LLM_SERVER_API_KEY"
   api_key: ""
   timeout_s: 60
+
+# Optional: separate model used as LLM-as-a-Judge for open-ended benchmarks.
+# If omitted, judge is skipped (no automatic judge calls during main run).
+# Uses the OpenAI API directly with the latest GPT model.
+# Set your OpenAI key: export OPENAI_API_KEY=sk-...
+judge:
+  url: "https://api.openai.com/v1"
+  client: "openai_sdk"
+  model_name: "gpt-4o"
+  verify_ssl: true
+  api_key_env: "OPENAI_API_KEY"
+  api_key: ""
+  timeout_s: 120
 
 # Which benchmark(s) to run.
 #
@@ -28,7 +41,7 @@ server:
 #                     Paper: Wind et al. 2025, npj Digital Medicine
 #   radbench        – RadBench (harrison.ai) clinical MCQ; metric: Accuracy
 #                     Paper: https://harrison-ai.github.io/radbench/
-#   vqa_med_2019    – VQA-Med-2019 image VQA (VLM needed); metric: BLEU + Accuracy
+#   vqa_med_2019    – VQA-Med-2019 image VQA (VLM needed); metric: WBSS + LLM-Judge
 #                     Paper: Ben Abacha et al. 2019, ImageCLEF
 #   radimagenet_vqa – RadImageNet-VQA CT/MRI/X-ray (VLM needed)
 #                     Metrics: MCQ Accuracy, Yes/No Accuracy, LLM-Judge (open)
