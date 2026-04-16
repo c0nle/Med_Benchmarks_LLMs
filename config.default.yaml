@@ -3,23 +3,22 @@ server:
   url: "https://134.130.13.43:4000/v1"
   client: "openai_sdk"
   # Enter model name to evaluate
-  model_name: "meta-llama/Meta-Llama-3.1-8B-Instruct"
+  model_name: "Enter your model name here"
 
   verify_ssl: false
   api_key_env: "LLM_SERVER_API_KEY"
   api_key: ""
   timeout_s: 60
 
-# Optional: separate model used as LLM-as-a-Judge for open-ended benchmarks.
-# If omitted, judge is skipped (no automatic judge calls during main run).
+# Separate model used as LLM-as-a-Judge for open-ended benchmarks.
 # Uses the OpenAI API directly with the latest GPT model.
 # Set your OpenAI key: export OPENAI_API_KEY=sk-...
 judge:
-  url: "https://api.openai.com/v1"
+  url: "https://134.130.13.43:4000/v1"
   client: "openai_sdk"
-  model_name: "gpt-4o"
-  verify_ssl: true
-  api_key_env: "OPENAI_API_KEY"
+  model_name: "openai/gpt-oss-120b"
+  verify_ssl: false
+  api_key_env: "LLM_SERVER_API_KEY"
   api_key: ""
   timeout_s: 120
 

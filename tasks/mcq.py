@@ -16,19 +16,23 @@ import time
 import pandas as pd
 
 
-def run(config: dict, client, data: list, results_path: str) -> str:
+def _parse_benchmark_settings(config: dict):
+    s = config.get("benchmark_settings", {})
+    sleep_s = float(s.get("sleep_s", 0) or 0)
+    max_errors = s.get("max_errors", None)
+    return sleep_s, int(max_errors) if max_errors is not None else None
+
+
+def run(config: dict, client, data: list, results_path: str, logger=None) -> str:
     """
     Run an MCQ benchmark and write incremental results to *results_path*.
 
     Returns the path to the written CSV.
     """
-    sleep_s = float(config.get("benchmark_settings", {}).get("sleep_s", 0) or 0)
-    max_errors = config.get("benchmark_settings", {}).get("max_errors", None)
-    max_errors = int(max_errors) if max_errors is not None else None
+    sleep_s, max_errors = _parse_benchmark_settings(config)
 
     fieldnames = ["id", "benchmark", "question", "correct_answer", "model_answer"]
 
-    # Resume: skip already processed IDs
     completed_ids: set = set()
     if os.path.exists(results_path) and os.path.getsize(results_path) > 0:
         try:
@@ -69,19 +73,25 @@ def run(config: dict, client, data: list, results_path: str) -> str:
 
             model_answer = client.ask_question(prompt)
 
-            if isinstance(model_answer, str) and model_answer.startswith("Error:"):
+            is_error = isinstance(model_answer, str) and model_answer.startswith("Error:")
+            if is_error:
                 errors += 1
-                if max_errors is not None and errors >= max_errors:
-                    print(f"Abbruch: max_errors={max_errors} erreicht.")
-                    writer.writerow({
-                        "id": item_id,
-                        "benchmark": item.get("benchmark", ""),
-                        "question": item["question"],
-                        "correct_answer": item.get("correct_answer", ""),
-                        "model_answer": model_answer,
-                    })
-                    f.flush()
-                    break
+
+            if logger:
+                status = f"ERROR: {model_answer}" if is_error else model_answer.strip()[:60]
+                logger.verbose(f"[{idx:>{len(str(total))}}/{total}] {item_id}  →  {status}")
+
+            if is_error and max_errors is not None and errors >= max_errors:
+                print(f"Abbruch: max_errors={max_errors} erreicht.")
+                writer.writerow({
+                    "id": item_id,
+                    "benchmark": item.get("benchmark", ""),
+                    "question": item["question"],
+                    "correct_answer": item.get("correct_answer", ""),
+                    "model_answer": model_answer,
+                })
+                f.flush()
+                break
 
             writer.writerow({
                 "id": item_id,
