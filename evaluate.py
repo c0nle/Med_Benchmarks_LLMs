@@ -4,7 +4,6 @@ import string
 from functools import lru_cache
 from typing import Optional
 import json
-import warnings
 
 import pandas as pd
 
@@ -266,70 +265,10 @@ def score_vqa_mcq(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _vqa_med_bleu(prediction: str, reference: str) -> float:
-    """
-    Per-item BLEU exactly as in the VQA-Med-2019/2020 official evaluator
-    (Ben Abacha et al., ImageCLEF 2019; source: Evaluator-VQA-Med-2020.py):
-      - _paper_tokenise(): lowercase → strip punctuation → word_tokenize
-                           → remove English stopwords → Snowball stem
-      - sentence_bleu with SmoothingFunction().method0
-      - Default weights (0.25, 0.25, 0.25, 0.25) = BLEU-4
-
-    Known quirk: 'no' is an NLTK stopword → tokenises to [] → always BLEU=0,
-    even when correct. This matches the official evaluator behaviour exactly.
-    Top systems 2019: BLEU ~64%, Accuracy ~62%.
-    """
-    try:
-        from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
-        pred_tokens = _paper_tokenise(prediction)
-        ref_tokens  = _paper_tokenise(reference)
-        # Official evaluator: if BOTH are empty after preprocessing (e.g. "no" vs "no",
-        # since "no" is an English stopword), assign score = 1.0 (exact match).
-        if len(ref_tokens) == 0 and len(pred_tokens) == 0:
-            return 1.0
-        if not pred_tokens or not ref_tokens:
-            return 0.0
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            return sentence_bleu(
-                [ref_tokens], pred_tokens,
-                smoothing_function=SmoothingFunction().method0,
-            )
-    except ImportError:
-        return _token_f1(prediction, reference)
-
-
-def _corpus_bleu(predictions: list, references: list) -> float:
-    """Average per-item VQA-Med BLEU across all pairs (paper methodology)."""
-    if not predictions:
-        return 0.0
-    scores = [_vqa_med_bleu(p, r) for p, r in zip(predictions, references)]
-    return sum(scores) / len(scores)
-
-
-def _sentence_bleu(prediction: str, reference: str) -> float:
-    """
-    Sentence-level BLEU for per-item storage (not the paper's primary metric).
-    Used only to populate the per-row 'bleu' column; aggregate via _corpus_bleu.
-    """
-    try:
-        from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
-        pred_tokens = _normalise_text(prediction).split()
-        ref_tokens = _normalise_text(reference).split()
-        if not pred_tokens or not ref_tokens:
-            return 0.0
-        sf = SmoothingFunction().method1
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            return sentence_bleu([ref_tokens], pred_tokens, smoothing_function=sf)
-    except ImportError:
-        return _token_f1(prediction, reference)
-
-
 def _wbss(prediction: str, reference: str) -> float:
     """
     Word-Based Semantic Similarity (WBSS) via Wu-Palmer similarity on WordNet.
-    Used in VQA-Med-2019 alongside BLEU (Ben Abacha et al., ImageCLEF 2019).
+    Used for VQA-Med-2019, RadImageNet-VQA, RadBench open, and RadioRAG.
     Requires: nltk + nltk.download('wordnet') + nltk.download('omw-1.4')
     Returns 0.0 if WordNet is unavailable.
     """
@@ -370,19 +309,12 @@ def _wbss(prediction: str, reference: str) -> float:
 def score_vqa_open(df: pd.DataFrame) -> pd.DataFrame:
     """
     Score open-ended VQA rows.
-
-    Metrics computed:
-      - WBSS : Wu-Palmer semantic similarity via WordNet
-      - BLEU : per-item BLEU-4 using the VQA-Med-2019 official preprocessing
-                (Ben Abacha et al., ImageCLEF 2019) — primary metric for VQA-Med-2019
+    Primary metric: WBSS (Wu-Palmer semantic similarity via WordNet).
     LLM-as-a-Judge is done separately via evaluate_vqa_with_judge().
     """
     df = df.copy()
     df["wbss"] = df.apply(
         lambda r: _wbss(str(r["model_answer"]), str(r["reference_answer"])), axis=1
-    )
-    df["bleu"] = df.apply(
-        lambda r: _vqa_med_bleu(str(r["model_answer"]), str(r["reference_answer"])), axis=1
     )
     return df
 
@@ -492,13 +424,10 @@ def write_vqa_report_jsonl(
                 scored_open = evaluate_vqa_with_judge(scored_open, client)
 
             avg_wbss = float(scored_open["wbss"].mean() * 100)
-            avg_bleu = float(scored_open["bleu"].mean() * 100)
             results["open_wbss_pct"] = round(avg_wbss, 2)
-            results["open_bleu_pct"] = round(avg_bleu, 2)
             results["open_rows"] = len(scored_open)
 
             f.write(json.dumps({"type": "metric", "subset": "open", "metric": "wbss_pct", "value": round(avg_wbss, 2), "note": "Wu-Palmer semantic similarity via WordNet"}, ensure_ascii=False) + "\n")
-            f.write(json.dumps({"type": "metric", "subset": "open", "metric": "bleu_pct", "value": round(avg_bleu, 2), "note": "BLEU-4 per VQA-Med-2019 official evaluator (Ben Abacha et al., ImageCLEF 2019)"}, ensure_ascii=False) + "\n")
             f.write(json.dumps({"type": "metric", "subset": "open", "metric": "rows", "value": len(scored_open)}, ensure_ascii=False) + "\n")
 
             # LLM-as-a-Judge (binary 0/1) — RadImageNet-VQA open-ended metric
@@ -532,7 +461,6 @@ def write_vqa_report_jsonl(
         if not open_df.empty:
             logger.verbose(
                 f"Open: {results.get('open_rows', 0)} questions  WBSS: {results.get('open_wbss_pct', 0):.2f}%"
-                f"  BLEU-4: {results.get('open_bleu_pct', 0):.2f}%"
                 + (f"  LLM-Judge: {results.get('open_judge_accuracy_pct', 0):.2f}%" if "open_judge_accuracy_pct" in results else "")
             )
             # Bottom-20 open questions by WBSS
@@ -563,8 +491,7 @@ def print_vqa_terminal_report(results_csv_path: str, report: dict = None) -> Non
         parts.append(f"Yes/No Accuracy: {r['yes_no_accuracy_pct']:.2f}% ({r.get('yes_no_rows', '?')} questions)")
     if "open_wbss_pct" in r:
         judge_str = f"  LLM-Judge: {r['open_judge_accuracy_pct']:.2f}%" if "open_judge_accuracy_pct" in r else ""
-        bleu_str = f"  BLEU-4: {r['open_bleu_pct']:.2f}%" if "open_bleu_pct" in r else ""
-        parts.append(f"Open WBSS: {r['open_wbss_pct']:.2f}%{bleu_str} ({r.get('open_rows', '?')} questions){judge_str}")
+        parts.append(f"Open WBSS: {r['open_wbss_pct']:.2f}% ({r.get('open_rows', '?')} questions){judge_str}")
 
     if not parts:
         # fallback: recompute from CSV (e.g. when called standalone via CLI)
@@ -583,7 +510,7 @@ def print_vqa_terminal_report(results_csv_path: str, report: dict = None) -> Non
             parts.append(f"Yes/No Accuracy: {yn_acc:.2f}% ({len(yes_no_df)} questions)")
         if not open_df.empty:
             scored = score_vqa_open(open_df)
-            parts.append(f"Open WBSS: {float(scored['wbss'].mean() * 100):.2f}%  BLEU-4: {float(scored['bleu'].mean() * 100):.2f}% ({len(scored)} questions)")
+            parts.append(f"Open WBSS: {float(scored['wbss'].mean() * 100):.2f}% ({len(scored)} questions)")
 
     for p in parts:
         print(f"  {p}")
@@ -715,7 +642,7 @@ def write_open_qa_report_jsonl(
     """
     Evaluate open-ended QA results (RadioRAG).
 
-    Automatic metrics: exact match, BLEU, token F1.
+    Automatic metric: WBSS.
     Primary metric (RadioRAG paper): LLM-as-a-Judge binary accuracy.
     Run with run_judge=True (requires a live LLM in client).
 
@@ -728,18 +655,15 @@ def write_open_qa_report_jsonl(
         scored = evaluate_vqa_with_judge(scored, client)
 
     avg_wbss = float(scored["wbss"].mean() * 100)
-    avg_bleu = float(scored["bleu"].mean() * 100)
 
     result = {
         "path": out_path,
         "wbss_pct": round(avg_wbss, 2),
-        "bleu_pct": round(avg_bleu, 2),
     }
 
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(json.dumps({"type": "metric", "metric": "rows", "value": len(scored)}, ensure_ascii=False) + "\n")
         f.write(json.dumps({"type": "metric", "metric": "wbss_pct", "value": round(avg_wbss, 2)}, ensure_ascii=False) + "\n")
-        f.write(json.dumps({"type": "metric", "metric": "bleu_pct", "value": round(avg_bleu, 2)}, ensure_ascii=False) + "\n")
 
         if "judge_correct" in scored.columns:
             valid = scored["judge_correct"].dropna()
@@ -762,7 +686,7 @@ def write_open_qa_report_jsonl(
     if logger:
         logger.verbose("\n--- Open QA Evaluation (RadioRAG) ---")
         logger.verbose(
-            f"WBSS: {result['wbss_pct']:.2f}%  BLEU-4: {result['bleu_pct']:.2f}%  ({len(scored)} questions)"
+            f"WBSS: {result['wbss_pct']:.2f}%  ({len(scored)} questions)"
             + (f"  LLM-Judge: {result.get('judge_accuracy_pct', 0):.2f}%" if "judge_accuracy_pct" in result else "")
         )
         # Judge-incorrect examples (up to 20)
@@ -802,11 +726,10 @@ def print_open_qa_terminal_report(results_csv_path: str, report: dict = None) ->
     df = pd.read_csv(results_csv_path)
     scored = score_vqa_open(df)
     avg_wbss = float(scored["wbss"].mean() * 100)
-    avg_bleu = float(scored["bleu"].mean() * 100)
     judge_str = ""
     if report and "judge_accuracy_pct" in report:
         judge_str = f"  LLM-Judge: {report['judge_accuracy_pct']:.2f}%"
-    print(f"  WBSS: {avg_wbss:.2f}%  BLEU-4: {avg_bleu:.2f}% ({len(scored)} questions){judge_str}")
+    print(f"  WBSS: {avg_wbss:.2f}% ({len(scored)} questions){judge_str}")
 
 
 # ===========================================================================

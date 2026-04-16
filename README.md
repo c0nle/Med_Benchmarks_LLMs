@@ -10,11 +10,11 @@ A modular, resumable evaluation framework for benchmarking LLMs and Vision-Langu
 |-----------|------|:---:|-----------|
 | MedQA | Text MCQ (USMLE) | — | Accuracy |
 | RaR | Text MCQ (Radiology board exam) | — | Accuracy |
-| RadBench | X-ray image VQA | ✅ | MCQ Accuracy / Yes-No Accuracy / Open WBSS + BLEU-4 |
-| VQA-Med-2019 | Medical image VQA | ✅ | Open BLEU-4 + WBSS + LLM-Judge |
-| RadImageNet-VQA | CT/MRI/X-ray image VQA | ✅ | Open WBSS + BLEU-4 + LLM-Judge |
+| RadBench | X-ray image VQA | ✅ | MCQ Accuracy / Yes-No Accuracy / Open WBSS |
+| VQA-Med-2019 | Medical image VQA | ✅ | Open WBSS + LLM-Judge |
+| RadImageNet-VQA | CT/MRI/X-ray image VQA | ✅ | Open WBSS + LLM-Judge |
 | Label Extraction | NER from radiology reports | — | Micro F1 |
-| RadioRAG | Open-ended radiology QA | — | WBSS + BLEU-4 + LLM-Judge |
+| RadioRAG | Open-ended radiology QA | — | WBSS + LLM-Judge |
 
 > **Text-only models** can still run on VLM benchmarks — they receive no image and results serve as a text-only baseline.
 
@@ -203,11 +203,6 @@ Measures semantic similarity between model answer and reference answer using Wu-
 | 30–50% | Moderate |
 | 50–70% | Good — correct domain, different wording |
 | > 70% | Strong |
-
-### BLEU-4
-Per-item BLEU-4 using the VQA-Med-2019 official preprocessing (Ben Abacha et al., ImageCLEF 2019): lowercase → strip punctuation → NLTK word tokenize → remove English stopwords → Snowball stemming. Average over all items. Primary metric for VQA-Med-2019; reported alongside WBSS for RadioRAG and RadImageNet-VQA.
-
-Note: the word "no" is an NLTK English stopword, so Yes/No answers of "no" score 0 even when correct — this is a known quirk of the official evaluator, reproduced exactly here.
 
 ### Micro F1
 Used for Label Extraction. TP/FP/FN aggregated across all items before computing precision/recall (following RadGraph protocol).
