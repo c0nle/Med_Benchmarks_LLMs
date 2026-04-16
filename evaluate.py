@@ -1,6 +1,7 @@
 import argparse
 import re
 import string
+from functools import lru_cache
 from typing import Optional
 import json
 import warnings
@@ -87,6 +88,7 @@ def _jsonable(value):
 def write_report_jsonl(
     results_csv_path: str = "results/benchmark_results.csv",
     out_path: str = "results/benchmark_report.jsonl",
+    logger=None,
 ) -> dict:
     """
     Writes a single JSONL file containing:
@@ -135,6 +137,37 @@ def write_report_jsonl(
                 obj[col] = _jsonable(val)
             f.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
+    if logger:
+        rows = int(metrics.loc[metrics["metric"] == "rows", "value"].iloc[0]) if not metrics.empty else len(df)
+        parsed_model = int(metrics.loc[metrics["metric"] == "parsed_model_answer", "value"].iloc[0]) if not metrics.empty else 0
+        logger.verbose(f"\n--- MCQ Evaluation ---")
+        logger.verbose(f"Total: {rows}  Parsed: {parsed_model}  Accuracy: {accuracy_pct:.2f}%")
+
+        # Answer distribution
+        logger.verbose("\nAnswer distribution:")
+        for _, row in dist.iterrows():
+            logger.verbose(f"  {row['answer']:>8}  {row['count']:>5}  ({row['pct']:.1f}%)")
+
+        # Confusion matrix
+        logger.verbose("\nConfusion matrix (correct → model):")
+        header = "       " + "".join(f"{col:>8}" for col in conf.columns)
+        logger.verbose(header)
+        for correct in conf.index:
+            row_str = f"  {correct:>4}  " + "".join(f"{int(conf.loc[correct, col]):>8}" for col in conf.columns)
+            logger.verbose(row_str)
+
+        # Wrong examples (up to 20)
+        wrong = scored[~scored["is_correct"]].head(20)
+        if not wrong.empty:
+            logger.verbose(f"\nWrong examples (first {len(wrong)}):")
+            for _, row in wrong.iterrows():
+                q_short = str(row.get("question", ""))[:80]
+                logger.verbose(
+                    f"  [{row.get('id')}] correct={row['correct_answer_norm']}  "
+                    f"model={row['model_answer_norm']}  raw={str(row.get('model_answer',''))[:30]!r}\n"
+                    f"    Q: {q_short}"
+                )
+
     return {"accuracy_pct": accuracy_pct, "path": out_path}
 
 
@@ -165,41 +198,6 @@ def _normalise_text(text: str, stem: bool = False) -> str:
     return " ".join(text.split())
 
 
-def _paper_tokenise(text: str) -> list:
-    """
-    Exact preprocessing from the VQA-Med-2019/2020 official evaluator
-    (Ben Abacha et al., ImageCLEF 2019; source: Evaluator-VQA-Med-2020.py):
-      1. Lowercase
-      2. Strip string.punctuation
-      3. word_tokenize (NLTK)
-      4. Remove English stopwords           ← 'no' IS a stopword → removed!
-      5. Snowball stemming
-
-    Note: because 'no' is an NLTK English stopword, answers of 'no' become []
-    and receive BLEU=0 even when correct. This is a quirk of the official script.
-    """
-    text = str(text).lower()
-    text = text.translate(str.maketrans("", "", string.punctuation))
-    try:
-        from nltk.tokenize import word_tokenize
-        tokens = word_tokenize(text)
-    except Exception:
-        tokens = text.split()
-    try:
-        from nltk.corpus import stopwords as _sw
-        sw = set(_sw.words("english"))
-        tokens = [t for t in tokens if t not in sw]
-    except Exception:
-        pass
-    try:
-        from nltk.stem import SnowballStemmer
-        stemmer = SnowballStemmer("english")
-        tokens = [stemmer.stem(t) for t in tokens]
-    except Exception:
-        pass
-    return tokens
-
-
 def _token_f1(prediction: str, reference: str) -> float:
     """
     Compute token-level F1 between prediction and reference strings.
@@ -224,11 +222,47 @@ def _exact_match(prediction: str, reference: str) -> bool:
 
 
 def score_vqa_mcq(df: pd.DataFrame) -> pd.DataFrame:
-    """Score MCQ rows in a VQA results CSV (columns: reference_answer, model_answer)."""
+    """
+    Score MCQ rows in a VQA results CSV.
+
+    Two modes depending on whether reference_answer is a letter or text:
+    - Letter reference (e.g. RadImageNet-VQA): extract letter from both sides, compare.
+    - Text reference (e.g. RadBench): model picks a letter, look up its text value via
+      options_json, compare text to reference case-insensitively.
+    """
+    import json as _json
     df = df.copy()
-    df["correct_answer_norm"] = df["reference_answer"].map(extract_choice)
+
+    def _score_row(row):
+        ref = str(row.get("reference_answer") or "").strip()
+        model_raw = str(row.get("model_answer") or "").strip()
+        model_letter = extract_choice(model_raw)
+
+        # Case 1: reference is a single letter → classic letter comparison
+        if len(ref) == 1 and ref.upper() in "ABCDE":
+            return model_letter == ref.upper()
+
+        # Case 2: reference is text → map model letter → text via options_json
+        options_raw = row.get("options_json") or "[]"
+        try:
+            options = _json.loads(options_raw) if isinstance(options_raw, str) else (options_raw or [])
+        except Exception:
+            options = []
+
+        if model_letter and options:
+            letter_map = {o["key"].upper(): str(o["value"]).strip().lower()
+                          for o in options if isinstance(o, dict) and "key" in o and "value" in o}
+            model_text = letter_map.get(model_letter, "")
+            return model_text == ref.strip().lower()
+
+        # Fallback: direct text normalisation
+        return _normalise_text(model_raw) == _normalise_text(ref)
+
+    df["correct_answer_norm"] = df["reference_answer"].map(
+        lambda r: r if (len(str(r).strip()) == 1 and str(r).strip().upper() in "ABCDE") else str(r).strip()
+    )
     df["model_answer_norm"] = df["model_answer"].map(extract_choice)
-    df["is_correct"] = df["correct_answer_norm"] == df["model_answer_norm"]
+    df["is_correct"] = df.apply(_score_row, axis=1)
     return df
 
 
@@ -301,26 +335,31 @@ def _wbss(prediction: str, reference: str) -> float:
     """
     try:
         from nltk.corpus import wordnet as wn
+
+        @lru_cache(maxsize=2048)
+        def _synsets(word):
+            return wn.synsets(word)
+
         pred_tokens = _normalise_text(prediction).split()
         ref_tokens = _normalise_text(reference).split()
         if not pred_tokens or not ref_tokens:
             return 0.0
 
         def best_wup(word, candidates):
-            syns_w = wn.synsets(word)
+            syns_w = _synsets(word)
             if not syns_w:
                 return 0.0
             best = 0.0
             for cand in candidates:
-                for sc in wn.synsets(cand):
+                for sc in _synsets(cand):
                     for sw in syns_w:
                         sim = sw.wup_similarity(sc)
                         if sim and sim > best:
                             best = sim
             return best
 
-        p2r = sum(best_wup(w, ref_tokens) for w in pred_tokens) / len(pred_tokens)
-        r2p = sum(best_wup(w, pred_tokens) for w in ref_tokens) / len(ref_tokens)
+        p2r = sum(best_wup(w, tuple(ref_tokens)) for w in pred_tokens) / len(pred_tokens)
+        r2p = sum(best_wup(w, tuple(pred_tokens)) for w in ref_tokens) / len(ref_tokens)
         if p2r + r2p == 0:
             return 0.0
         return 2 * p2r * r2p / (p2r + r2p)
@@ -332,12 +371,18 @@ def score_vqa_open(df: pd.DataFrame) -> pd.DataFrame:
     """
     Score open-ended VQA rows.
 
-    Primary metric: WBSS (Wu-Palmer semantic similarity via WordNet).
+    Metrics computed:
+      - WBSS : Wu-Palmer semantic similarity via WordNet
+      - BLEU : per-item BLEU-4 using the VQA-Med-2019 official preprocessing
+                (Ben Abacha et al., ImageCLEF 2019) — primary metric for VQA-Med-2019
     LLM-as-a-Judge is done separately via evaluate_vqa_with_judge().
     """
     df = df.copy()
     df["wbss"] = df.apply(
         lambda r: _wbss(str(r["model_answer"]), str(r["reference_answer"])), axis=1
+    )
+    df["bleu"] = df.apply(
+        lambda r: _vqa_med_bleu(str(r["model_answer"]), str(r["reference_answer"])), axis=1
     )
     return df
 
@@ -383,6 +428,7 @@ def write_vqa_report_jsonl(
     out_path: str,
     client=None,
     run_judge: bool = False,
+    logger=None,
 ) -> dict:
     """
     Evaluate a VQA results CSV and write a JSONL report.
@@ -408,10 +454,10 @@ def write_vqa_report_jsonl(
     with open(out_path, "w", encoding="utf-8") as f:
         # --- MCQ sub-results ---
         if not mcq_df.empty:
-            # Rename for compatibility with score_results
             scored_mcq = score_vqa_mcq(mcq_df)
             accuracy = float(scored_mcq["is_correct"].mean() * 100)
             results["mcq_accuracy_pct"] = round(accuracy, 2)
+            results["mcq_rows"] = len(scored_mcq)
             f.write(json.dumps({"type": "metric", "subset": "mcq", "metric": "accuracy_pct", "value": round(accuracy, 2)}, ensure_ascii=False) + "\n")
             f.write(json.dumps({"type": "metric", "subset": "mcq", "metric": "rows", "value": len(scored_mcq)}, ensure_ascii=False) + "\n")
             for _, row in scored_mcq.iterrows():
@@ -430,6 +476,7 @@ def write_vqa_report_jsonl(
             )
             yn_acc = float(scored_yn["is_correct"].mean() * 100)
             results["yes_no_accuracy_pct"] = round(yn_acc, 2)
+            results["yes_no_rows"] = len(scored_yn)
             f.write(json.dumps({"type": "metric", "subset": "yes_no", "metric": "accuracy_pct", "value": round(yn_acc, 2), "note": "exact-match, RadImageNet-VQA closed-ended task"}, ensure_ascii=False) + "\n")
             f.write(json.dumps({"type": "metric", "subset": "yes_no", "metric": "rows", "value": len(scored_yn)}, ensure_ascii=False) + "\n")
             for _, row in scored_yn.iterrows():
@@ -445,9 +492,13 @@ def write_vqa_report_jsonl(
                 scored_open = evaluate_vqa_with_judge(scored_open, client)
 
             avg_wbss = float(scored_open["wbss"].mean() * 100)
+            avg_bleu = float(scored_open["bleu"].mean() * 100)
             results["open_wbss_pct"] = round(avg_wbss, 2)
+            results["open_bleu_pct"] = round(avg_bleu, 2)
+            results["open_rows"] = len(scored_open)
 
             f.write(json.dumps({"type": "metric", "subset": "open", "metric": "wbss_pct", "value": round(avg_wbss, 2), "note": "Wu-Palmer semantic similarity via WordNet"}, ensure_ascii=False) + "\n")
+            f.write(json.dumps({"type": "metric", "subset": "open", "metric": "bleu_pct", "value": round(avg_bleu, 2), "note": "BLEU-4 per VQA-Med-2019 official evaluator (Ben Abacha et al., ImageCLEF 2019)"}, ensure_ascii=False) + "\n")
             f.write(json.dumps({"type": "metric", "subset": "open", "metric": "rows", "value": len(scored_open)}, ensure_ascii=False) + "\n")
 
             # LLM-as-a-Judge (binary 0/1) — RadImageNet-VQA open-ended metric
@@ -464,41 +515,75 @@ def write_vqa_report_jsonl(
                     obj[col] = _jsonable(val)
                 f.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
+    if logger:
+        logger.verbose("\n--- VQA Evaluation ---")
+        if not mcq_df.empty:
+            logger.verbose(f"MCQ: {results.get('mcq_rows', 0)} questions  Accuracy: {results.get('mcq_accuracy_pct', 0):.2f}%")
+            wrong_mcq = scored_mcq[~scored_mcq["is_correct"]].head(10)
+            if not wrong_mcq.empty:
+                logger.verbose(f"  Wrong MCQ examples (first {len(wrong_mcq)}):")
+                for _, row in wrong_mcq.iterrows():
+                    logger.verbose(
+                        f"    [{row.get('id')}] correct={row['correct_answer_norm']}  "
+                        f"model={row['model_answer_norm']}  raw={str(row.get('model_answer',''))[:30]!r}"
+                    )
+        if not yes_no_df.empty:
+            logger.verbose(f"Yes/No: {results.get('yes_no_rows', 0)} questions  Accuracy: {results.get('yes_no_accuracy_pct', 0):.2f}%")
+        if not open_df.empty:
+            logger.verbose(
+                f"Open: {results.get('open_rows', 0)} questions  WBSS: {results.get('open_wbss_pct', 0):.2f}%"
+                f"  BLEU-4: {results.get('open_bleu_pct', 0):.2f}%"
+                + (f"  LLM-Judge: {results.get('open_judge_accuracy_pct', 0):.2f}%" if "open_judge_accuracy_pct" in results else "")
+            )
+            # Bottom-20 open questions by WBSS
+            bottom = scored_open.nsmallest(20, "wbss")
+            logger.verbose(f"  Bottom {len(bottom)} open answers by WBSS:")
+            for _, row in bottom.iterrows():
+                q_short = str(row.get("question", ""))[:60]
+                ref_short = str(row.get("reference_answer", ""))[:40]
+                ans_short = str(row.get("model_answer", ""))[:40]
+                judge = f"  judge={int(row['judge_correct'])}" if "judge_correct" in row and pd.notna(row.get("judge_correct")) else ""
+                logger.verbose(
+                    f"    [{row.get('id')}] wbss={row['wbss']:.3f}{judge}\n"
+                    f"      Q:   {q_short}\n"
+                    f"      Ref: {ref_short}\n"
+                    f"      Ans: {ans_short}"
+                )
+
     return results
 
 
 def print_vqa_terminal_report(results_csv_path: str, report: dict = None) -> None:
-    df = pd.read_csv(results_csv_path)
-    q_type_col = "question_type" if "question_type" in df.columns else None
-
-    if q_type_col:
-        mcq_df = df[df[q_type_col] == "mcq"].copy()
-        yes_no_df = df[df[q_type_col] == "yes_no"].copy()
-        open_df = df[df[q_type_col] == "open"].copy()
-    else:
-        mcq_df = pd.DataFrame()
-        yes_no_df = pd.DataFrame()
-        open_df = df.copy()
-
+    r = report or {}
     parts = []
-    if not mcq_df.empty:
-        scored = score_vqa_mcq(mcq_df)
-        acc = float(scored["is_correct"].mean() * 100)
-        parts.append(f"MCQ Accuracy: {acc:.2f}% ({len(scored)} questions)")
 
-    if not yes_no_df.empty:
-        yn_acc = float(yes_no_df.apply(
-            lambda r: _normalise_text(str(r["model_answer"])) == _normalise_text(str(r["reference_answer"])), axis=1
-        ).mean() * 100)
-        parts.append(f"Yes/No Accuracy: {yn_acc:.2f}% ({len(yes_no_df)} questions)")
+    if "mcq_accuracy_pct" in r:
+        parts.append(f"MCQ Accuracy: {r['mcq_accuracy_pct']:.2f}% ({r.get('mcq_rows', '?')} questions)")
+    if "yes_no_accuracy_pct" in r:
+        parts.append(f"Yes/No Accuracy: {r['yes_no_accuracy_pct']:.2f}% ({r.get('yes_no_rows', '?')} questions)")
+    if "open_wbss_pct" in r:
+        judge_str = f"  LLM-Judge: {r['open_judge_accuracy_pct']:.2f}%" if "open_judge_accuracy_pct" in r else ""
+        bleu_str = f"  BLEU-4: {r['open_bleu_pct']:.2f}%" if "open_bleu_pct" in r else ""
+        parts.append(f"Open WBSS: {r['open_wbss_pct']:.2f}%{bleu_str} ({r.get('open_rows', '?')} questions){judge_str}")
 
-    if not open_df.empty:
-        scored = score_vqa_open(open_df)
-        wbss = float(scored["wbss"].mean() * 100)
-        judge_str = ""
-        if report and "open_judge_accuracy_pct" in report:
-            judge_str = f"  LLM-Judge: {report['open_judge_accuracy_pct']:.2f}%"
-        parts.append(f"Open WBSS: {wbss:.2f}% ({len(scored)} questions){judge_str}")
+    if not parts:
+        # fallback: recompute from CSV (e.g. when called standalone via CLI)
+        df = pd.read_csv(results_csv_path)
+        q_type_col = "question_type" if "question_type" in df.columns else None
+        mcq_df = df[df[q_type_col] == "mcq"] if q_type_col else pd.DataFrame()
+        yes_no_df = df[df[q_type_col] == "yes_no"] if q_type_col else pd.DataFrame()
+        open_df = df[df[q_type_col] == "open"] if q_type_col else df
+        if not mcq_df.empty:
+            acc = float(score_vqa_mcq(mcq_df)["is_correct"].mean() * 100)
+            parts.append(f"MCQ Accuracy: {acc:.2f}% ({len(mcq_df)} questions)")
+        if not yes_no_df.empty:
+            yn_acc = float(yes_no_df.apply(
+                lambda row: _normalise_text(str(row["model_answer"])) == _normalise_text(str(row["reference_answer"])), axis=1
+            ).mean() * 100)
+            parts.append(f"Yes/No Accuracy: {yn_acc:.2f}% ({len(yes_no_df)} questions)")
+        if not open_df.empty:
+            scored = score_vqa_open(open_df)
+            parts.append(f"Open WBSS: {float(scored['wbss'].mean() * 100):.2f}%  BLEU-4: {float(scored['bleu'].mean() * 100):.2f}% ({len(scored)} questions)")
 
     for p in parts:
         print(f"  {p}")
@@ -559,6 +644,7 @@ def _micro_prf(scored_df: pd.DataFrame):
 def write_extraction_report_jsonl(
     results_csv_path: str,
     out_path: str,
+    logger=None,
 ) -> dict:
     """
     Evaluate label extraction results using Micro F1 (as in RadGraph, Jain et al. NeurIPS 2021).
@@ -582,6 +668,23 @@ def write_extraction_report_jsonl(
             for col, val in row.to_dict().items():
                 obj[col] = _jsonable(val)
             f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+
+    if logger:
+        logger.verbose("\n--- Extraction Evaluation ---")
+        logger.verbose(f"Micro F1: {micro_f1:.2f}%  P: {micro_p:.2f}%  R: {micro_r:.2f}%  ({len(scored)} texts)")
+        # Worst 20 by per-item F1
+        scored["item_f1"] = scored.apply(
+            lambda r: (2 * r["tp"] / (2 * r["tp"] + r["fp"] + r["fn"])) if (2 * r["tp"] + r["fp"] + r["fn"]) > 0 else 0.0,
+            axis=1,
+        )
+        worst = scored.nsmallest(20, "item_f1")
+        logger.verbose(f"  Worst {len(worst)} items by item F1:")
+        for _, row in worst.iterrows():
+            logger.verbose(
+                f"    [{row.get('id')}] f1={row['item_f1']:.3f}  tp={row['tp']}  fp={row['fp']}  fn={row['fn']}\n"
+                f"      Ref: {str(row.get('reference_entities',''))[:80]}\n"
+                f"      Got: {str(row.get('model_entities',''))[:80]}"
+            )
 
     return {
         "micro_precision_pct": micro_p,
@@ -607,6 +710,7 @@ def write_open_qa_report_jsonl(
     out_path: str,
     client=None,
     run_judge: bool = False,
+    logger=None,
 ) -> dict:
     """
     Evaluate open-ended QA results (RadioRAG).
@@ -624,15 +728,18 @@ def write_open_qa_report_jsonl(
         scored = evaluate_vqa_with_judge(scored, client)
 
     avg_wbss = float(scored["wbss"].mean() * 100)
+    avg_bleu = float(scored["bleu"].mean() * 100)
 
     result = {
         "path": out_path,
         "wbss_pct": round(avg_wbss, 2),
+        "bleu_pct": round(avg_bleu, 2),
     }
 
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(json.dumps({"type": "metric", "metric": "rows", "value": len(scored)}, ensure_ascii=False) + "\n")
         f.write(json.dumps({"type": "metric", "metric": "wbss_pct", "value": round(avg_wbss, 2)}, ensure_ascii=False) + "\n")
+        f.write(json.dumps({"type": "metric", "metric": "bleu_pct", "value": round(avg_bleu, 2)}, ensure_ascii=False) + "\n")
 
         if "judge_correct" in scored.columns:
             valid = scored["judge_correct"].dropna()
@@ -652,6 +759,42 @@ def write_open_qa_report_jsonl(
                 obj[col] = _jsonable(val)
             f.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
+    if logger:
+        logger.verbose("\n--- Open QA Evaluation (RadioRAG) ---")
+        logger.verbose(
+            f"WBSS: {result['wbss_pct']:.2f}%  BLEU-4: {result['bleu_pct']:.2f}%  ({len(scored)} questions)"
+            + (f"  LLM-Judge: {result.get('judge_accuracy_pct', 0):.2f}%" if "judge_accuracy_pct" in result else "")
+        )
+        # Judge-incorrect examples (up to 20)
+        if "judge_correct" in scored.columns:
+            incorrect = scored[scored["judge_correct"] == 0].head(20)
+            if not incorrect.empty:
+                logger.verbose(f"  Judge-incorrect examples (first {len(incorrect)}):")
+                for _, row in incorrect.iterrows():
+                    q_short = str(row.get("question", ""))[:60]
+                    ref_short = str(row.get("reference_answer", ""))[:50]
+                    ans_short = str(row.get("model_answer", ""))[:50]
+                    logger.verbose(
+                        f"    [{row.get('id')}] wbss={row['wbss']:.3f}\n"
+                        f"      Q:   {q_short}\n"
+                        f"      Ref: {ref_short}\n"
+                        f"      Ans: {ans_short}"
+                    )
+        else:
+            # Bottom-20 by WBSS when no judge
+            bottom = scored.nsmallest(20, "wbss")
+            logger.verbose(f"  Bottom {len(bottom)} answers by WBSS:")
+            for _, row in bottom.iterrows():
+                q_short = str(row.get("question", ""))[:60]
+                ref_short = str(row.get("reference_answer", ""))[:50]
+                ans_short = str(row.get("model_answer", ""))[:50]
+                logger.verbose(
+                    f"    [{row.get('id')}] wbss={row['wbss']:.3f}\n"
+                    f"      Q:   {q_short}\n"
+                    f"      Ref: {ref_short}\n"
+                    f"      Ans: {ans_short}"
+                )
+
     return result
 
 
@@ -659,10 +802,11 @@ def print_open_qa_terminal_report(results_csv_path: str, report: dict = None) ->
     df = pd.read_csv(results_csv_path)
     scored = score_vqa_open(df)
     avg_wbss = float(scored["wbss"].mean() * 100)
+    avg_bleu = float(scored["bleu"].mean() * 100)
     judge_str = ""
     if report and "judge_accuracy_pct" in report:
         judge_str = f"  LLM-Judge: {report['judge_accuracy_pct']:.2f}%"
-    print(f"  WBSS: {avg_wbss:.2f}% ({len(scored)} questions){judge_str}")
+    print(f"  WBSS: {avg_wbss:.2f}%  BLEU-4: {avg_bleu:.2f}% ({len(scored)} questions){judge_str}")
 
 
 # ===========================================================================

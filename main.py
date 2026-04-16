@@ -11,8 +11,10 @@ config.yaml options:
 import yaml
 import os
 import importlib
+import datetime
 
 from core.client import MedicalLLMClient
+from core.logger import RunLogger
 
 # ---------------------------------------------------------------------------
 # Benchmark registry
@@ -94,7 +96,7 @@ def _build_judge_client(config: dict):
         return None
 
 
-def _run_one(benchmark: str, registry: dict, config: dict, client, judge_client) -> dict:
+def _run_one(benchmark: str, registry: dict, config: dict, client, judge_client, logger=None) -> dict:
     """Load data, run the task, and evaluate for a single benchmark. Returns metrics dict."""
     loader, task_module_path, eval_type = registry[benchmark]
 
@@ -108,36 +110,36 @@ def _run_one(benchmark: str, registry: dict, config: dict, client, judge_client)
     report_path  = f"results/{benchmark}_report.jsonl"
 
     task = importlib.import_module(task_module_path)
-    task.run(config, client, data, results_path)
+    task.run(config, client, data, results_path, logger=logger)
 
-    return _evaluate(benchmark, eval_type, results_path, report_path, judge_client)
+    return _evaluate(benchmark, eval_type, results_path, report_path, judge_client, logger=logger)
 
 
-def _evaluate(benchmark: str, eval_type: str, results_path: str, report_path: str, judge_client) -> dict:
+def _evaluate(benchmark: str, eval_type: str, results_path: str, report_path: str, judge_client, logger=None) -> dict:
     """Run the appropriate evaluation and return a metrics dict."""
     run_judge = judge_client is not None
     try:
         if eval_type == "mcq":
             from evaluate import write_report_jsonl, print_terminal_report
-            report = write_report_jsonl(results_path, out_path=report_path)
+            report = write_report_jsonl(results_path, out_path=report_path, logger=logger)
             print_terminal_report(results_path)
             return {"accuracy_pct": report.get("accuracy_pct")}
 
         elif eval_type == "vqa":
             from evaluate import write_vqa_report_jsonl, print_vqa_terminal_report
-            report = write_vqa_report_jsonl(results_path, out_path=report_path, client=judge_client, run_judge=run_judge)
+            report = write_vqa_report_jsonl(results_path, out_path=report_path, client=judge_client, run_judge=run_judge, logger=logger)
             print_vqa_terminal_report(results_path, report=report)
             return {k: v for k, v in report.items() if k != "path"}
 
         elif eval_type == "extraction":
             from evaluate import write_extraction_report_jsonl, print_extraction_terminal_report
-            report = write_extraction_report_jsonl(results_path, out_path=report_path)
+            report = write_extraction_report_jsonl(results_path, out_path=report_path, logger=logger)
             print_extraction_terminal_report(results_path)
             return {"micro_f1_pct": report.get("micro_f1_pct")}
 
         elif eval_type == "open_qa":
             from evaluate import write_open_qa_report_jsonl, print_open_qa_terminal_report
-            report = write_open_qa_report_jsonl(results_path, out_path=report_path, client=judge_client, run_judge=run_judge)
+            report = write_open_qa_report_jsonl(results_path, out_path=report_path, client=judge_client, run_judge=run_judge, logger=logger)
             print_open_qa_terminal_report(results_path, report=report)
             return {k: v for k, v in report.items() if k != "path"}
 
@@ -161,33 +163,40 @@ def main():
     registry = _registry()
     benchmarks = _resolve_benchmarks(config, registry)
 
-    client = MedicalLLMClient(config)
-    judge_client = _build_judge_client(config)
-    if judge_client:
-        print(f"Judge model: {judge_client.model}")
-    else:
-        print("No judge model configured — LLM-as-a-Judge will be skipped.")
-        print("To enable: add a 'judge:' section to config.yaml")
+    os.makedirs("results", exist_ok=True)
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = f"results/run_{ts}.log"
 
-    summary = []
-    for benchmark in benchmarks:
-        try:
-            metrics = _run_one(benchmark, registry, config, client, judge_client)
-            summary.append((benchmark, metrics, None))
-        except Exception as e:
-            print(f"\nError in benchmark '{benchmark}': {e}")
-            summary.append((benchmark, {}, str(e)))
+    with RunLogger(log_path) as logger:
+        print(f"Log: {log_path}")
 
-    print(f"\n{'='*60}")
-    print("  RESULTS")
-    print(f"{'='*60}")
-    for name, metrics, err in summary:
-        if err:
-            print(f"  {name:<22} ERROR: {err}")
+        client = MedicalLLMClient(config)
+        judge_client = _build_judge_client(config)
+        if judge_client:
+            print(f"Judge model: {judge_client.model}")
         else:
-            metric_str = "  ".join(f"{k}: {v:.2f}%" if isinstance(v, float) else f"{k}: {v}" for k, v in metrics.items())
-            print(f"  {name:<22} {metric_str if metric_str else 'no metrics'}")
-    print(f"{'='*60}")
+            print("No judge model configured — LLM-as-a-Judge will be skipped.")
+            print("To enable: add a 'judge:' section to config.yaml")
+
+        summary = []
+        for benchmark in benchmarks:
+            try:
+                metrics = _run_one(benchmark, registry, config, client, judge_client, logger=logger)
+                summary.append((benchmark, metrics, None))
+            except Exception as e:
+                print(f"\nError in benchmark '{benchmark}': {e}")
+                summary.append((benchmark, {}, str(e)))
+
+        print(f"\n{'='*60}")
+        print("  RESULTS")
+        print(f"{'='*60}")
+        for name, metrics, err in summary:
+            if err:
+                print(f"  {name:<22} ERROR: {err}")
+            else:
+                metric_str = "  ".join(f"{k}: {v:.2f}%" if isinstance(v, float) else f"{k}: {v}" for k, v in metrics.items())
+                print(f"  {name:<22} {metric_str if metric_str else 'no metrics'}")
+        print(f"{'='*60}")
 
 
 if __name__ == "__main__":

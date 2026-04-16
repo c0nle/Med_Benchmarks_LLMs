@@ -14,16 +14,16 @@ import time
 
 import pandas as pd
 
+from tasks.mcq import _parse_benchmark_settings
 
-def run(config: dict, client, data: list, results_path: str) -> str:
+
+def run(config: dict, client, data: list, results_path: str, logger=None) -> str:
     """
     Run an open-ended QA benchmark and write incremental results.
 
     Returns the path to the written CSV.
     """
-    sleep_s = float(config.get("benchmark_settings", {}).get("sleep_s", 0) or 0)
-    max_errors = config.get("benchmark_settings", {}).get("max_errors", None)
-    max_errors = int(max_errors) if max_errors is not None else None
+    sleep_s, max_errors = _parse_benchmark_settings(config)
 
     fieldnames = ["id", "benchmark", "question", "reference_answer", "model_answer"]
 
@@ -39,7 +39,7 @@ def run(config: dict, client, data: list, results_path: str) -> str:
 
     total = len(data)
     remaining = sum(1 for item in data if str(item.get("id")) not in completed_ids)
-    print(f"Open-ended QA Benchmark: {total} Fragen ({remaining} neu zu bearbeiten)...")
+    print(f"  {total} questions  ({remaining} remaining)...")
 
     start = time.time()
     processed_new = 0
@@ -61,22 +61,27 @@ def run(config: dict, client, data: list, results_path: str) -> str:
                 "Provide a concise, medically accurate answer."
             )
 
-            print(f"[{idx}/{total}] ID: {item_id}...")
             model_answer = client.ask_question(prompt)
 
-            if isinstance(model_answer, str) and model_answer.startswith("Error:"):
+            is_error = isinstance(model_answer, str) and model_answer.startswith("Error:")
+            if is_error:
                 errors += 1
-                if max_errors is not None and errors >= max_errors:
-                    print(f"Abbruch: max_errors={max_errors} erreicht.")
-                    writer.writerow({
-                        "id": item_id,
-                        "benchmark": item.get("benchmark", ""),
-                        "question": item["question"],
-                        "reference_answer": item.get("reference_answer", ""),
-                        "model_answer": model_answer,
-                    })
-                    f.flush()
-                    break
+
+            if logger:
+                status = f"ERROR: {model_answer}" if is_error else model_answer.strip()[:60]
+                logger.verbose(f"[{idx:>{len(str(total))}}/{total}] {item_id}  →  {status}")
+
+            if is_error and max_errors is not None and errors >= max_errors:
+                print(f"Abbruch: max_errors={max_errors} erreicht.")
+                writer.writerow({
+                    "id": item_id,
+                    "benchmark": item.get("benchmark", ""),
+                    "question": item["question"],
+                    "reference_answer": item.get("reference_answer", ""),
+                    "model_answer": model_answer,
+                })
+                f.flush()
+                break
 
             writer.writerow({
                 "id": item_id,
@@ -95,8 +100,10 @@ def run(config: dict, client, data: list, results_path: str) -> str:
                 elapsed = time.time() - start
                 rate = processed_new / elapsed if elapsed > 0 else 0.0
                 eta_s = int((remaining - processed_new) / rate) if rate > 0 else -1
-                eta = f"{eta_s//3600:02d}:{(eta_s%3600)//60:02d}:{eta_s%60:02d}" if eta_s >= 0 else "?"
-                print(f"Progress: {processed_new}/{remaining}, Errors: {errors}, Rate: {rate:.2f} q/s, ETA: {eta}")
+                eta = f"{eta_s//60:02d}:{eta_s%60:02d}" if eta_s >= 0 else "?"
+                pct = int(processed_new / remaining * 100) if remaining > 0 else 100
+                print(f"  [{processed_new:>{len(str(remaining))}}/{remaining}] {pct:3d}%  {rate:.1f} q/s  ETA {eta}  errors: {errors}")
 
-    print(f"Open-ended QA abgeschlossen. Ergebnisse in {results_path}")
+    elapsed_total = time.time() - start
+    print(f"  Done: {processed_new}/{remaining}  errors: {errors}  ({elapsed_total/60:.1f} min)")
     return results_path

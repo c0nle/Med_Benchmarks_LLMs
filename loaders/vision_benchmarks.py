@@ -16,34 +16,47 @@ Each item follows this schema:
     }
 }
 """
-import os
 from pathlib import Path
 
-from loaders.text_benchmarks import _ensure_hf_cache_dir, _load_local_parquet
+from loaders.text_benchmarks import _load_local_parquet, _load_local_file
 
-_ensure_hf_cache_dir()
+# ---------------------------------------------------------------------------
+# Expected data file locations (place files here before running)
+# ---------------------------------------------------------------------------
 
-from datasets import load_dataset
+_VQA_MED_PATH    = Path("data/vqa_med_2019.parquet")
+_RADBENCH_PATH   = Path("data/radbench.csv")
 
 
-def _pil_to_b64(image) -> str:
-    """Convert a PIL Image to a base64 JPEG string (used by the client)."""
+def _pil_to_b64(image, fmt: str = "jpeg") -> str:
+    """Convert a PIL Image to a base64 string. Returns '' if image is None."""
     import io, base64
     if image is None:
         return ""
-    buf = io.BytesIO()
-    rgb = image.convert("RGB")
-    rgb.save(buf, format="JPEG")
-    return base64.b64encode(buf.getvalue()).decode("utf-8")
+    try:
+        buf = io.BytesIO()
+        image.convert("RGB").save(buf, format=fmt.upper() if fmt.lower() != "jpg" else "JPEG")
+        return base64.b64encode(buf.getvalue()).decode("utf-8")
+    except Exception:
+        return ""
+
+
+def _build_options_list(raw) -> list:
+    """Normalise a raw choices/options field to [{'key': ..., 'value': ...}]."""
+    if isinstance(raw, dict):
+        return [{"key": k, "value": v} for k, v in raw.items()]
+    if isinstance(raw, list) and raw:
+        if isinstance(raw[0], str):
+            return [{"key": k, "value": v} for k, v in zip("ABCDE", raw)]
+        return raw
+    return []
 
 
 # ---------------------------------------------------------------------------
-# VQA-Med-2019
+# VQA-Med-2019  →  data/vqa_med_2019.parquet
 # ---------------------------------------------------------------------------
 
 def _format_vqa_med_item(item: dict, idx: int) -> dict:
-    """Normalise a VQA-Med-2019 row."""
-    # HF dataset fields vary by source; try common field names
     question = (
         item.get("question")
         or item.get("Question")
@@ -86,211 +99,182 @@ def _format_vqa_med_item(item: dict, idx: int) -> dict:
 
 def load_vqa_med_2019(limit=None):
     """
-    Loads the VQA-Med-2019 benchmark (ImageCLEF 2019 Medical VQA).
-
-    Priority:
-    1) Local parquet via env var VQA_MED_2019_PARQUET_PATH
-    2) Auto-detect data/vqa_med*.parquet
-    3) Hugging Face dataset (flaviagiammarino/vqa-rad or similar)
-
-    Note: VQA-Med-2019 is image-based. The model receives the question AND the
-    medical image (base64-encoded JPEG) and must produce a free-text answer.
-    A vision-capable LLM (VLM) is required.
+    Loads VQA-Med-2019 from data/vqa_med_2019.parquet.
+    Download (VQA-Med-2019): https://huggingface.co/datasets/simwit/vqa-med-2019
+    Download (VQA-RAD, smaller): https://huggingface.co/datasets/flaviagiammarino/vqa-rad
+    Either dataset works; VQA-Med-2019 is the ImageCLEF 2019 benchmark (Ben Abacha et al.).
     """
     print("--- Lade VQA-Med-2019 ---")
 
-    local_path = os.getenv("VQA_MED_2019_PARQUET_PATH")
-    if not local_path:
-        for candidate in (
-            "data/vqa_med_2019.parquet",
-            "data/vqa-med-2019.parquet",
-            "data/vqa_med.parquet",
-        ):
-            if Path(candidate).exists():
-                local_path = candidate
-                break
+    if not _VQA_MED_PATH.exists():
+        raise FileNotFoundError(
+            f"VQA-Med-2019 nicht gefunden: {_VQA_MED_PATH}\n"
+            "Download: https://huggingface.co/datasets/flaviagiammarino/vqa-rad\n"
+            "Datei ablegen als: data/vqa_med_2019.parquet"
+        )
 
-    if local_path:
-        dataset = _load_local_parquet(local_path)
-    else:
-        # Official community mirrors of VQA-Med-2019 (Ben Abacha et al., ImageCLEF 2019)
-        # Original: https://github.com/abachaa/VQA-Med-2019
-        hf_candidates = [
-            ("simwit/vqa-med-2019", "test"),
-            ("simwit/vqa-med-2019", "train"),
-            ("claudioreeves/imageclef-vqa-med-2019", "test"),
-            ("claudioreeves/imageclef-vqa-med-2019", "train"),
-        ]
-        dataset = None
-        last_err = None
-        for hf_id, split in hf_candidates:
-            try:
-                dataset = load_dataset(hf_id, split=split)
-                print(f"  Geladen von HuggingFace: {hf_id} (split={split})")
-                break
-            except Exception as e:
-                last_err = e
-        if dataset is None:
-            raise RuntimeError(
-                "VQA-Med-2019 konnte nicht geladen werden.\n\n"
-                "Fix:\n"
-                "1) Parquet-Datei bereitstellen und Pfad setzen:\n"
-                "   export VQA_MED_2019_PARQUET_PATH=/pfad/zur/vqa_med_2019.parquet\n"
-                "   (Format: Spalten 'question', 'answer', 'image')\n"
-                f"Originalfehler: {type(last_err).__name__}: {last_err}"
-            ) from last_err
-
+    items = _load_local_parquet(str(_VQA_MED_PATH))
     if limit:
-        dataset = dataset.select(range(min(limit, len(dataset))))
-
-    return [_format_vqa_med_item(item, idx) for idx, item in enumerate(dataset)]
+        items = items[:limit]
+    return [_format_vqa_med_item(item, idx) for idx, item in enumerate(items)]
 
 
 # ---------------------------------------------------------------------------
 # RadImageNet-VQA
 # ---------------------------------------------------------------------------
 
-def _detect_radimagenet_qtype(item: dict) -> str:
-    """
-    Detect whether a RadImageNet-VQA item is MCQ, yes/no (closed), or open-ended.
-
-    Per Butsanets et al. 2025 (RadImageNet-VQA paper):
-    - Multiple-choice (MC): option letter extracted with rule-based parser → accuracy
-    - Closed-ended (yes/no): exact-match accuracy
-    - Open-ended (pathology description): LLM-as-a-Judge (binary correct/incorrect)
-
-    The dataset stores this in a 'question_type' or 'task' field.
-    """
-    explicit = (
-        str(item.get("question_type") or item.get("type") or item.get("task") or "")
-    ).lower()
-
-    if "mcq" in explicit or "multiple" in explicit or "choice" in explicit:
-        return "mcq"
-    if "yes" in explicit or "no" in explicit or "closed" in explicit or "binary" in explicit:
-        return "yes_no"
-    if "open" in explicit or "free" in explicit or "pathology" in explicit:
-        return "open"
-
-    # Infer from answer value and presence of choices
-    if item.get("choices") or item.get("options"):
-        return "mcq"
-    answer = str(item.get("answer") or item.get("gt") or "").strip().lower()
-    if answer in {"yes", "no"}:
-        return "yes_no"
-    return "open"
-
-
 def _format_radimagenet_item(item: dict, idx: int) -> dict:
-    """Normalise a RadImageNet-VQA row."""
-    question = (
-        item.get("question")
-        or item.get("Question")
-        or item.get("query")
-        or ""
-    )
-    answer = (
-        item.get("answer")
-        or item.get("Answer")
-        or item.get("label")
-        or item.get("gt")
-        or ""
-    )
-    image = item.get("image") or item.get("img") or None
-    modality = item.get("modality") or item.get("Modality") or ""
-    q_type = _detect_radimagenet_qtype(item)
+    """
+    Normalise a RadImageNet-VQA row.
 
-    # For MCQ items, build options list if present
-    choices_raw = item.get("choices") or item.get("options") or {}
-    if isinstance(choices_raw, dict):
-        options = [{"key": k, "value": v} for k, v in choices_raw.items()]
-    elif isinstance(choices_raw, list) and choices_raw:
-        if isinstance(choices_raw[0], str):
-            keys = ["A", "B", "C", "D", "E"]
-            options = [{"key": keys[i], "value": v} for i, v in enumerate(choices_raw)]
-        else:
-            options = choices_raw
-    else:
-        options = []
+    The HuggingFace dataset (raidium/RadImageNet-VQA, alignment config) uses a
+    conversations + metadata schema:
+      conversations: [
+        {"from": "human",    "value": "<image>\\nDescribe the clinical findings..."},
+        {"from": "template", "value": "CT examination of the abdomen ..."},
+      ]
+      metadata: {"content_type": "description", "modality": "ct", "pathology": "...", ...}
+
+    All items in the alignment config are open-ended image descriptions (no MCQ/Yes-No).
+    """
+    convs = item.get("conversations") or []
+    meta  = item.get("metadata") or {}
+
+    # Extract question from human turn, strip <image> tag
+    question = ""
+    for turn in convs:
+        if turn.get("from") == "human":
+            question = str(turn.get("value") or "").replace("<image>", "").strip()
+            break
+
+    # Extract answer from template/assistant turn
+    answer = ""
+    for turn in convs:
+        if turn.get("from") in ("template", "gpt", "assistant"):
+            answer = str(turn.get("value") or "").strip()
+            break
+
+    # Fallback to flat fields (for custom local parquet with different schema)
+    if not question:
+        question = str(item.get("question") or item.get("Question") or item.get("query") or "")
+    if not answer:
+        answer = str(item.get("answer") or item.get("Answer") or item.get("label") or item.get("gt") or "")
+
+    modality = str(meta.get("modality") or item.get("modality") or "").upper()
 
     return {
         "id": str(item.get("id") or item.get("image_id") or f"radimagenet-{idx}"),
         "benchmark": "RadImageNet-VQA",
-        "question": str(question),
-        "answer": str(answer),
-        "options": options,          # non-empty only for MCQ items
-        "image": image,
-        "image_format": "jpeg",
+        "question": question,
+        "answer": answer,
+        "options": [],
+        "image": item.get("image") or item.get("img") or None,
+        "image_format": "png",
         "meta": {
-            "modality": modality,    # CT | MRI | X-ray
-            "question_type": q_type, # "mcq" | "open"  – used by tasks/vqa.py
+            "modality": modality,
+            "question_type": "open",  # alignment config is description-only
+            "pathology": str(meta.get("pathology") or ""),
             "source": "RadImageNet-VQA",
         },
     }
 
 
+def _load_radimagenet_local(limit: int = None) -> list:
+    """
+    Load RadImageNet-VQA from data/radimagenet_vqa_*.parquet chunks via pyarrow.
+    Decodes image bytes → PIL on the fly. Stops at `limit` items.
+    """
+    import glob as _glob
+    import io
+    import pyarrow.parquet as pq
+    from PIL import Image as _PILImage
+
+    files = sorted(_glob.glob("data/radimagenet_vqa_*.parquet"))
+
+    if not files:
+        return None
+
+    print(f"  {len(files)} lokale Chunk(s) gefunden, lade via pyarrow...")
+
+    def _decode_image(val):
+        """Convert parquet image value (bytes dict or raw bytes) → PIL Image."""
+        try:
+            if isinstance(val, dict):
+                raw = val.get("bytes") or val.get("data")
+            elif isinstance(val, (bytes, bytearray)):
+                raw = val
+            else:
+                return None
+            return _PILImage.open(io.BytesIO(raw)) if raw else None
+        except Exception:
+            return None
+
+    def _decode_cell(key, val):
+        """Unwrap pyarrow scalars and decode images."""
+        import pyarrow as pa
+        if isinstance(val, pa.lib.BaseArrowObject):
+            val = val.as_py()
+        if key == "image":
+            return _decode_image(val)
+        # conversations / metadata come back as dicts/lists already via as_py()
+        return val
+
+    items = []
+    for fpath in files:
+        pf = pq.ParquetFile(fpath)
+        for batch in pf.iter_batches(batch_size=256):
+            columns = {col: batch.column(col).to_pylist() for col in batch.schema.names}
+            n = batch.num_rows
+            for i in range(n):
+                row = {}
+                for col, vals in columns.items():
+                    v = vals[i]
+                    if col == "image":
+                        v = _decode_image(v)
+                    row[col] = v
+                items.append(row)
+                if limit is not None and len(items) >= limit:
+                    return items
+    return items
+
+
 def load_radimagenet_vqa(limit=None):
     """
-    Loads the RadImageNet-VQA benchmark (CT, MRI, X-ray image understanding).
+    Loads the RadImageNet-VQA dataset (CT, MRI, X-ray image descriptions).
+
+    Uses the raidium/RadImageNet-VQA alignment training set, which contains
+    750K open-ended image description items (no MCQ/Yes-No in this config).
+    All questions ask the model to describe clinical findings for a given image.
 
     Priority:
-    1) Local parquet via env var RADIMAGENET_VQA_PARQUET_PATH
-    2) Auto-detect data/radimagenet*.parquet
-    3) Hugging Face dataset (UCSC-VLAA/RadImageNet-VQA or similar)
+    1) Local parquet via env var RADIMAGENET_VQA_PARQUET_PATH (single file)
+    2) Auto-detect data/radimagenet_vqa_*.parquet (numbered chunks)
+    3) Auto-detect data/radimagenet*.parquet (single file)
+
+    HuggingFace is NOT used as fallback — dataset must be available locally.
+    Download: see README for instructions.
 
     Note: Requires a vision-capable LLM (VLM).
     """
     print("--- Lade RadImageNet-VQA (CT/MRT/Röntgen Bildverständnis) ---")
 
-    local_path = os.getenv("RADIMAGENET_VQA_PARQUET_PATH")
-    if not local_path:
-        for candidate in (
-            "data/radimagenet_vqa.parquet",
-            "data/radimagenet-vqa.parquet",
-            "data/radimagenet.parquet",
-        ):
-            if Path(candidate).exists():
-                local_path = candidate
-                break
+    items = _load_radimagenet_local(limit=limit)
 
-    if local_path:
-        dataset = _load_local_parquet(local_path)
-    else:
-        # Official HF dataset: raidium/RadImageNet-VQA (Butsanets et al., 2025)
-        # Config name is "alignment"; available split is "train".
-        hf_candidates = [
-            ("raidium/RadImageNet-VQA", "alignment", "train"),
-            ("raidium/RadImageNet-VQA", "alignment", "test"),
-            ("raidium/RadImageNet-VQA", None, "test"),
-            ("raidium/RadImageNet-VQA", None, "train"),
-        ]
-        dataset = None
-        last_err = None
-        for hf_id, config_name, split in hf_candidates:
-            try:
-                kwargs = {"split": split}
-                if config_name:
-                    kwargs["name"] = config_name
-                dataset = load_dataset(hf_id, **kwargs)
-                label = f"{hf_id}" + (f" (config={config_name})" if config_name else "") + f" (split={split})"
-                print(f"  Geladen von HuggingFace: {label}")
-                break
-            except Exception as e:
-                last_err = e
-        if dataset is None:
-            raise RuntimeError(
-                "RadImageNet-VQA konnte nicht geladen werden.\n\n"
-                "Fix:\n"
-                "1) Parquet-Datei bereitstellen und Pfad setzen:\n"
-                "   export RADIMAGENET_VQA_PARQUET_PATH=/pfad/zur/radimagenet_vqa.parquet\n"
-                "   (Format: Spalten 'question', 'answer', 'image', optional 'modality')\n"
-                f"Originalfehler: {type(last_err).__name__}: {last_err}"
-            ) from last_err
+    if items is None:
+        raise FileNotFoundError(
+            "RadImageNet-VQA nicht gefunden: data/radimagenet_vqa_000.parquet\n"
+            "Download (einmalig, ~750K Items):\n"
+            "  python3 -c \"\n"
+            "  from datasets import load_dataset\n"
+            "  ds = load_dataset('raidium/RadImageNet-VQA', name='alignment', split='train')\n"
+            "  for i in range(0, len(ds), 50000):\n"
+            "      ds.select(range(i, min(i+50000, len(ds)))).to_parquet(f'data/radimagenet_vqa_{i//50000:03d}.parquet')\n"
+            "  \"\n"
+            "Dateien ablegen als: data/radimagenet_vqa_000.parquet, data/radimagenet_vqa_001.parquet, ..."
+        )
 
-    if limit:
-        dataset = dataset.select(range(min(limit, len(dataset))))
-
-    return [_format_radimagenet_item(item, idx) for idx, item in enumerate(dataset)]
+    print(f"  {len(items)} Items geladen.")
+    return [_format_radimagenet_item(item, idx) for idx, item in enumerate(items)]
 
 
 # ---------------------------------------------------------------------------
@@ -313,6 +297,41 @@ def _detect_radbench_qtype(item: dict) -> str:
     return "open"
 
 
+_RADBENCH_IMAGE_DIR = Path("data/radbench_images")
+
+
+def _load_radbench_images(image_ids_str: str) -> list:
+    """
+    Load PIL images for a RadBench row from the local image cache.
+
+    image_ids_str is a comma-separated list of UUIDs (MedPix) or URLs (Radiopaedia).
+    Returns a list of PIL Images for each ID that has a file in data/radbench_images/.
+    """
+    import io
+    try:
+        from PIL import Image as _PILImage
+    except ImportError:
+        return []
+
+    images = []
+    if not image_ids_str or str(image_ids_str).lower() in ("nan", "none", ""):
+        return images
+
+    for img_id in str(image_ids_str).split(","):
+        img_id = img_id.strip()
+        # Derive the same filename used by download_radbench_images.py
+        fname = img_id.split("/")[-1].split("?")[0]
+        if not fname.lower().endswith((".jpg", ".jpeg", ".png")):
+            fname += ".jpg"
+        path = _RADBENCH_IMAGE_DIR / fname
+        if path.exists():
+            try:
+                images.append(_PILImage.open(path).copy())
+            except Exception:
+                pass
+    return images
+
+
 def _format_radbench_item(item: dict, idx: int) -> dict:
     """
     Normalise a RadBench (harrison.ai) row into the shared VQA schema.
@@ -323,18 +342,11 @@ def _format_radbench_item(item: dict, idx: int) -> dict:
     """
     q_type = _detect_radbench_qtype(item)
 
-    # Build options list for MCQ items
-    opts_raw = item.get("OPTIONS") or item.get("options") or item.get("choices") or {}
-    if isinstance(opts_raw, dict):
-        options = [{"key": k, "value": v} for k, v in opts_raw.items()]
-    elif isinstance(opts_raw, list) and opts_raw:
-        if isinstance(opts_raw[0], str):
-            keys = ["A", "B", "C", "D", "E"]
-            options = [{"key": keys[i], "value": v} for i, v in enumerate(opts_raw)]
-        else:
-            options = opts_raw
-    else:
-        options = []
+    raw_opts = item.get("OPTIONS") or item.get("options") or item.get("choices") or {}
+    # RadBench stores options as a comma-separated string e.g. "yes,no" or "frontal,oblique,lateral"
+    if isinstance(raw_opts, str) and raw_opts.strip() and raw_opts.strip().lower() not in ("nan", "none"):
+        raw_opts = [v.strip() for v in raw_opts.split(",") if v.strip()]
+    options = _build_options_list(raw_opts)
 
     # If closed-ended but options look like yes/no, treat as yes_no
     if q_type == "mcq" and len(options) == 2:
@@ -344,7 +356,16 @@ def _format_radbench_item(item: dict, idx: int) -> dict:
 
     answer = str(item.get("ANSWER") or item.get("answer") or item.get("gt") or "").strip()
 
+    # Use embedded image if present (parquet), otherwise load from local image cache
     image = item.get("image") or item.get("img") or None
+    images = []
+    if image is not None:
+        images = [image]
+    else:
+        images = _load_radbench_images(item.get("imageIDs") or "")
+
+    # Primary image for single-image tasks; all images passed in meta for multi-image
+    primary_image = images[0] if images else None
 
     return {
         "id": str(item.get("CASE_ID") or item.get("id") or item.get("qid") or f"radbench-{idx}"),
@@ -352,7 +373,7 @@ def _format_radbench_item(item: dict, idx: int) -> dict:
         "question": str(item.get("QUESTION") or item.get("question") or ""),
         "answer": answer,
         "options": options,
-        "image": image,
+        "image": primary_image,
         "image_format": "jpeg",
         "meta": {
             "question_type": q_type,       # "mcq" | "yes_no" | "open"
@@ -360,6 +381,7 @@ def _format_radbench_item(item: dict, idx: int) -> dict:
             "modality": str(item.get("modality") or "XR"),
             "organ": str(item.get("IMAGE_ORGAN") or ""),
             "source": str(item.get("imageSource") or "RadBench"),
+            "all_images": images,          # full list for multi-image questions
         },
     }
 
@@ -379,43 +401,43 @@ def load_radbench(limit=None):
       - Closed-ended Yes/No → exact-match accuracy
       - Open-ended          → BLEU + LLM-as-a-Judge
 
-    RadBench is NOT on HuggingFace. Download from:
-      https://github.com/harrison-ai/radbench
-      https://harrison-ai.github.io/radbench/
-
-    Priority:
-    1) Local parquet via env var RADBENCH_PARQUET_PATH
-    2) Auto-detect data/radbench*.parquet
+    Download: https://github.com/harrison-ai/radbench
+    Datei ablegen als: data/radbench.csv
+    X-ray Bilder herunterladen: python3 scripts/download_radbench_images.py
     """
     print("--- Lade RadBench (harrison.ai – VLM Röntgen-Benchmark) ---")
 
-    local_path = os.getenv("RADBENCH_PARQUET_PATH")
-    if not local_path:
-        for candidate in (
-            "data/radbench.parquet",
-            "data/radbench-test.parquet",
-            "data/radbench_test.parquet",
-        ):
-            if Path(candidate).exists():
-                local_path = candidate
-                break
-
-    if local_path is None:
-        raise RuntimeError(
-            "RadBench konnte nicht geladen werden.\n\n"
-            "Das Dataset ist NICHT auf HuggingFace. Bitte:\n"
-            "1) Daten von https://github.com/harrison-ai/radbench herunterladen.\n"
-            "2) Als Parquet ablegen und Pfad setzen:\n"
-            "   export RADBENCH_PARQUET_PATH=/pfad/zur/radbench.parquet\n"
-            "   (Erwartete Spalten: QUESTION, ANSWER, A_TYPE, OPTIONS,\n"
-            "    IMAGE_ORGAN, modality, CASE_ID, optional: image)\n"
-            "Hinweis: Bilder (X-rays) sind separat in /images/ im Repo.\n"
-            "         Ohne Bild läuft das Modell text-only (gültig als Baseline).\n"
+    if not _RADBENCH_PATH.exists():
+        raise FileNotFoundError(
+            f"RadBench nicht gefunden: {_RADBENCH_PATH}\n"
+            "Download: git clone https://github.com/harrison-ai/radbench data/radbench_repo\n"
+            "Dann: cp data/radbench_repo/data/radbench/radbench.csv data/radbench.csv\n"
+            "Bilder: python3 scripts/download_radbench_images.py"
         )
 
-    dataset = _load_local_parquet(local_path)
+    items = _load_local_file(str(_RADBENCH_PATH))
+
+    # Filter out MedPix cases that have no local image (MedPix API is no longer available)
+    before = len(items)
+    items = [it for it in items
+             if str(it.get("imageSource") or "").strip().lower() != "medpix"
+             or any(
+                 (_RADBENCH_IMAGE_DIR / (img_id.strip().split("/")[-1].split("?")[0] + (
+                     "" if img_id.strip().split("/")[-1].split("?")[0].lower().endswith((".jpg",".jpeg",".png")) else ".jpg"
+                 ))).exists()
+                 for img_id in str(it.get("imageIDs") or "").split(",") if img_id.strip()
+             )]
+    n_filtered = before - len(items)
+    if n_filtered:
+        print(f"  {n_filtered} MedPix-Fragen ohne Bild herausgefiltert ({before} → {len(items)})")
 
     if limit:
-        dataset = dataset.select(range(min(limit, len(dataset))))
+        items = items[:limit]
 
-    return [_format_radbench_item(item, idx) for idx, item in enumerate(dataset)]
+    formatted = [_format_radbench_item(item, idx) for idx, item in enumerate(items)]
+    n_with_img = sum(1 for it in formatted if it["image"] is not None)
+    if _RADBENCH_IMAGE_DIR.exists():
+        print(f"  {n_with_img}/{len(formatted)} Fragen mit Bild geladen aus {_RADBENCH_IMAGE_DIR}/")
+    else:
+        print(f"  Keine Bilder gefunden. Für Vision-Evaluation: python3 scripts/download_radbench_images.py")
+    return formatted

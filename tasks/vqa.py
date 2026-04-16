@@ -17,27 +17,12 @@ Results CSV columns:
 """
 import os
 import csv
+import json
 import time
-import base64
-import io
 
 import pandas as pd
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _pil_to_b64(image, fmt: str = "jpeg") -> str:
-    """Convert a PIL Image to a base64 string. Returns '' if image is None."""
-    if image is None:
-        return ""
-    try:
-        buf = io.BytesIO()
-        image.convert("RGB").save(buf, format=fmt.upper() if fmt.lower() != "jpg" else "JPEG")
-        return base64.b64encode(buf.getvalue()).decode("utf-8")
-    except Exception:
-        return ""
+from loaders.vision_benchmarks import _pil_to_b64
 
 
 def _detect_question_type(item: dict) -> str:
@@ -52,10 +37,10 @@ def _detect_question_type(item: dict) -> str:
     VQA-Med-2019 is open-ended only → BLEU + exact-match.
     """
     q_type = str(item.get("meta", {}).get("question_type") or "").lower()
-    if q_type == "mcq" or item.get("options"):
-        return "mcq"
     if q_type == "yes_no":
         return "yes_no"
+    if q_type == "mcq" or item.get("options"):
+        return "mcq"
     return "open"
 
 
@@ -88,7 +73,7 @@ def _build_open_prompt(item: dict) -> str:
 # Main runner
 # ---------------------------------------------------------------------------
 
-def run(config: dict, client, data: list, results_path: str) -> str:
+def run(config: dict, client, data: list, results_path: str, logger=None) -> str:
     """
     Run a VQA benchmark (image + text) and write incremental results.
 
@@ -97,11 +82,10 @@ def run(config: dict, client, data: list, results_path: str) -> str:
 
     Returns the path to the written CSV.
     """
-    sleep_s = float(config.get("benchmark_settings", {}).get("sleep_s", 0) or 0)
-    max_errors = config.get("benchmark_settings", {}).get("max_errors", None)
-    max_errors = int(max_errors) if max_errors is not None else None
+    from tasks.mcq import _parse_benchmark_settings
+    sleep_s, max_errors = _parse_benchmark_settings(config)
 
-    fieldnames = ["id", "benchmark", "question_type", "question", "reference_answer", "model_answer"]
+    fieldnames = ["id", "benchmark", "question_type", "question", "reference_answer", "model_answer", "options_json"]
 
     completed_ids: set = set()
     if os.path.exists(results_path) and os.path.getsize(results_path) > 0:
@@ -151,7 +135,15 @@ def run(config: dict, client, data: list, results_path: str) -> str:
             else:
                 model_answer = client.ask_question(prompt)
 
-            if isinstance(model_answer, str) and model_answer.startswith("Error:"):
+            is_error = isinstance(model_answer, str) and model_answer.startswith("Error:")
+
+            if logger:
+                status = f"ERROR: {model_answer}" if is_error else model_answer.strip()[:60]
+                logger.verbose(f"[{idx:>{len(str(total))}}/{total}] {item_id} ({q_type})  →  {status}")
+
+            options_json = json.dumps(item.get("options") or [])
+
+            if is_error:
                 errors += 1
                 if max_errors is not None and errors >= max_errors:
                     print(f"Abbruch: max_errors={max_errors} erreicht.")
@@ -162,6 +154,7 @@ def run(config: dict, client, data: list, results_path: str) -> str:
                         "question": item["question"],
                         "reference_answer": item.get("answer", ""),
                         "model_answer": model_answer,
+                        "options_json": options_json,
                     })
                     f.flush()
                     break
@@ -173,6 +166,7 @@ def run(config: dict, client, data: list, results_path: str) -> str:
                 "question": item["question"],
                 "reference_answer": item.get("answer", ""),
                 "model_answer": model_answer,
+                "options_json": options_json,
             })
             f.flush()
             processed_new += 1
