@@ -52,10 +52,10 @@ judge:
 #                     Paper: Tayebi Arasteh et al. 2024 (https://arxiv.org/abs/2407.15621)
 #                     GitHub: https://github.com/tayebiarasteh/RadioRAG
 #                     Note: dataset NOT on HuggingFace — local file required
-benchmark: [medqa,rar,radbench, label_extraction, radiorag]
+benchmark: [medqa,rar,radbench, vqa_med_2019, radimagenet_vqa ,radiorag]
 
 benchmark_settings:
-  limit_samples: null # Whole dataset
+  limit_samples: 5000 # Whole dataset: null (not recommended as radimagenet_vqa hat 750.000 samples :))
   temperature: 0.0
   max_tokens: 256
   # optional: sleep between requests to avoid rate limits

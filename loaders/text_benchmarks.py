@@ -7,9 +7,9 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 _MEDQA_PATH       = Path("data/medqa-test.parquet")
-_RAR_PATH         = Path("data/rar-test.parquet")
+_RAR_PATH         = Path("data/RaR_dataset_WithAnswer.csv")
 _EXTRACTION_PATH  = Path("data/extraction.parquet")
-_RADIORAG_PATH    = Path("data/radiorag.json")
+_RADIORAG_PATH    = Path("data/RadioRAG_WithOptions_WithAnswer.csv")
 
 
 # ---------------------------------------------------------------------------
@@ -127,57 +127,44 @@ def load_medqa(limit=None):
 # ---------------------------------------------------------------------------
 
 def _format_rar_item(item: dict, idx: int) -> dict:
-    raw_options = item.get("options") or item.get("choices") or {}
-    if isinstance(raw_options, dict):
-        options = [{"key": k, "value": v} for k, v in raw_options.items()]
-    elif isinstance(raw_options, list):
-        if raw_options and isinstance(raw_options[0], str):
-            keys = ["A", "B", "C", "D", "E"]
-            options = [{"key": keys[i], "value": v} for i, v in enumerate(raw_options)]
-        else:
-            options = raw_options
-    else:
-        options = []
+    # Columns: question_number, question, option_A..option_E, solution_index
+    options = []
+    for key in ["A", "B", "C", "D", "E"]:
+        val = item.get(f"option_{key}")
+        if val is not None and str(val).strip():
+            options.append({"key": key, "value": str(val).strip()})
 
-    answer = str(item.get("answer") or item.get("correct_answer") or item.get("label") or "")
-    if len(answer) > 1:
-        answer = answer.strip()[0].upper()
+    answer = str(item.get("solution_index") or "").strip().upper()
 
     return {
-        "id": str(item.get("id") or item.get("qid") or f"rar-{idx}"),
+        "id": str(item.get("question_number") or f"rar-{idx}"),
         "benchmark": "RaR",
-        "question": item.get("question") or item.get("Question") or "",
+        "question": str(item.get("question") or ""),
         "options": options,
-        "correct_answer": answer.upper(),
+        "correct_answer": answer,
         "meta": {
-            "source": item.get("source", "RaR"),
-            "category": item.get("category") or item.get("type") or "",
+            "source": "RaR",
         },
     }
 
 
 def load_rar(limit=None):
     """
-    Loads RaR (Reasoning and Radiology, n=65) from data/rar-test.parquet.
+    Loads RaR (Reasoning and Radiology) from data/RaR_dataset_WithAnswer.csv.
+    Columns: question_number, question, option_A..option_E, solution_index
     Dataset not public — contact authors: https://www.nature.com/articles/s41746-025-02250-5
-    Also accepts data/rar-test.csv.
     """
-    print("--- Lade RaR (Reasoning and Radiology, n=65) ---")
+    print("--- Lade RaR (Reasoning and Radiology) ---")
 
-    path = _RAR_PATH
-    if not path.exists():
-        csv_path = path.with_suffix(".csv")
-        if csv_path.exists():
-            path = csv_path
-        else:
-            raise FileNotFoundError(
-                f"RaR nicht gefunden: {_RAR_PATH}\n"
-                "Dataset nicht öffentlich — Autoren kontaktieren:\n"
-                "https://www.nature.com/articles/s41746-025-02250-5\n"
-                "Datei ablegen als: data/rar-test.parquet  (oder .csv)"
-            )
+    if not _RAR_PATH.exists():
+        raise FileNotFoundError(
+            f"RaR nicht gefunden: {_RAR_PATH}\n"
+            "Dataset nicht öffentlich — Autoren kontaktieren:\n"
+            "https://www.nature.com/articles/s41746-025-02250-5\n"
+            "Datei ablegen als: data/RaR_dataset_WithAnswer.csv"
+        )
 
-    items = _load_local_file(str(path))
+    items = _load_local_csv(str(_RAR_PATH))
     if limit:
         items = items[:limit]
     return [_format_rar_item(item, idx) for idx, item in enumerate(items)]
@@ -253,65 +240,52 @@ def load_label_extraction(limit=None):
 
 
 # ---------------------------------------------------------------------------
-# RadioRAG (Open-ended QA)  →  data/radiorag.json
+# RadioRAG (MCQ)  →  data/RadioRAG_WithOptions_WithAnswer.csv
 # ---------------------------------------------------------------------------
 
 def _format_radiorag_item(item: dict, idx: int) -> dict:
-    question = (
-        item.get("question")
-        or item.get("Question")
-        or item.get("prompt")
-        or ""
-    )
-    reference = (
-        item.get("answer")
-        or item.get("reference_answer")
-        or item.get("gt")
-        or item.get("Answer")
-        or ""
-    )
+    # Columns: q number, question, option 1..4, answer index (1-based)
+    options = []
+    for i, key in enumerate(["A", "B", "C", "D"], start=1):
+        val = item.get(f"option {i}")
+        if val is not None and str(val).strip():
+            options.append({"key": key, "value": str(val).strip()})
+
+    answer_idx = item.get("answer index")
+    try:
+        correct_answer = ["A", "B", "C", "D"][int(answer_idx) - 1]
+    except (TypeError, ValueError, IndexError):
+        correct_answer = ""
+
     return {
-        "id": str(item.get("id") or item.get("question_id") or f"radiorag-{idx}"),
+        "id": str(item.get("q number") or f"radiorag-{idx}"),
         "benchmark": "RadioRAG",
-        "question": str(question),
-        "reference_answer": str(reference),
+        "question": str(item.get("question") or ""),
+        "options": options,
+        "correct_answer": correct_answer,
         "meta": {
-            "subspecialty": item.get("subspecialty") or item.get("category") or "",
-            "source": item.get("source") or "RadioRAG",
+            "source": "RadioRAG",
         },
     }
 
 
 def load_radiorag(limit=None):
     """
-    Loads RadioRAG (open-ended radiology QA, n=104) from data/radiorag.json.
-    Also accepts data/radiorag.parquet.
+    Loads RadioRAG from data/RadioRAG_WithOptions_WithAnswer.csv.
+    Columns: q number, question, option 1..4, answer index (1-based)
     Dataset not public — contact authors: https://github.com/tayebiarasteh/RadioRAG
     """
-    print("--- Lade RadioRAG (Open-ended Radiology QA) ---")
+    print("--- Lade RadioRAG (Radiology MCQ) ---")
 
-    path = _RADIORAG_PATH
-    if not path.exists():
-        parquet_path = path.with_suffix(".parquet")
-        if parquet_path.exists():
-            path = parquet_path
-        else:
-            raise FileNotFoundError(
-                f"RadioRAG nicht gefunden: {_RADIORAG_PATH}\n"
-                "Dataset nicht öffentlich — Autoren kontaktieren:\n"
-                "https://github.com/tayebiarasteh/RadioRAG\n"
-                "Datei ablegen als: data/radiorag.json  (oder .parquet)"
-            )
+    if not _RADIORAG_PATH.exists():
+        raise FileNotFoundError(
+            f"RadioRAG nicht gefunden: {_RADIORAG_PATH}\n"
+            "Dataset nicht öffentlich — Autoren kontaktieren:\n"
+            "https://github.com/tayebiarasteh/RadioRAG\n"
+            "Datei ablegen als: data/RadioRAG_WithOptions_WithAnswer.csv"
+        )
 
-    if path.suffix.lower() == ".json":
-        import json as _json
-        with open(path, encoding="utf-8") as fh:
-            raw = _json.load(fh)
-        rows = list(raw.values()) if isinstance(raw, dict) else raw
-    else:
-        rows = _load_local_file(str(path))
-
+    items = _load_local_csv(str(_RADIORAG_PATH))
     if limit:
-        rows = rows[:limit]
-
-    return [_format_radiorag_item(item, idx) for idx, item in enumerate(rows)]
+        items = items[:limit]
+    return [_format_radiorag_item(item, idx) for idx, item in enumerate(items)]
