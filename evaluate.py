@@ -8,14 +8,14 @@ import json
 import pandas as pd
 
 
-CHOICE_RE = re.compile(r"\b([ABCD])\b", re.IGNORECASE)
+CHOICE_RE = re.compile(r"\b([A-E])\b", re.IGNORECASE)
 
 
 def extract_choice(value) -> Optional[str]:
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return None
     text = str(value).strip().upper()
-    if text in {"A", "B", "C", "D"}:
+    if text in {"A", "B", "C", "D", "E"}:
         return text
     match = CHOICE_RE.search(text)
     if match:
@@ -196,24 +196,6 @@ def _normalise_text(text: str, stem: bool = False) -> str:
     text = text.translate(str.maketrans("", "", string.punctuation))
     return " ".join(text.split())
 
-
-def _token_f1(prediction: str, reference: str) -> float:
-    """
-    Compute token-level F1 between prediction and reference strings.
-    Used for open-ended VQA scoring (SQuAD-style).
-    """
-    pred_tokens = _normalise_text(prediction).split()
-    ref_tokens = _normalise_text(reference).split()
-    if not pred_tokens and not ref_tokens:
-        return 1.0
-    if not pred_tokens or not ref_tokens:
-        return 0.0
-    common = set(pred_tokens) & set(ref_tokens)
-    if not common:
-        return 0.0
-    precision = len([t for t in pred_tokens if t in common]) / len(pred_tokens)
-    recall = len([t for t in ref_tokens if t in common]) / len(ref_tokens)
-    return 2 * precision * recall / (precision + recall)
 
 
 def _exact_match(prediction: str, reference: str) -> bool:

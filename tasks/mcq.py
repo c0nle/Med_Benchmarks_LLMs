@@ -62,13 +62,13 @@ def run(config: dict, client, data: list, results_path: str, logger=None) -> str
             if item_id in completed_ids:
                 continue
 
-            options_str = ", ".join(
-                f"{opt['key']}: {opt['value']}" for opt in item.get("options", [])
-            )
+            opts = item.get("options", [])
+            options_str = ", ".join(f"{opt['key']}: {opt['value']}" for opt in opts)
+            keys = "/".join(opt["key"] for opt in opts) if opts else "A/B/C/D"
             prompt = (
                 f"Question: {item['question']}\n"
                 f"Options: {options_str}\n"
-                "Reply with only the correct letter (A/B/C/D)."
+                f"Reply with only the correct letter ({keys})."
             )
 
             model_answer = client.ask_question(prompt)

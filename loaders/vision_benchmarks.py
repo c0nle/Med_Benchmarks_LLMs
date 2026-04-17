@@ -24,8 +24,9 @@ from loaders.text_benchmarks import _load_local_parquet, _load_local_file
 # Expected data file locations (place files here before running)
 # ---------------------------------------------------------------------------
 
-_VQA_MED_PATH    = Path("data/vqa_med_2019.parquet")
-_RADBENCH_PATH   = Path("data/radbench.csv")
+_VQA_MED_PATH                = Path("data/vqa_med_2019.parquet")
+_RADBENCH_PATH               = Path("data/radbench.csv")
+_RADIMAGENET_BENCHMARK_PATH  = Path("data/radimagenet_vqa_benchmark.parquet")
 
 
 def _pil_to_b64(image, fmt: str = "jpeg") -> str:
@@ -123,158 +124,87 @@ def load_vqa_med_2019(limit=None):
 # RadImageNet-VQA
 # ---------------------------------------------------------------------------
 
-def _format_radimagenet_item(item: dict, idx: int) -> dict:
+def _format_radimagenet_benchmark_item(item: dict, idx: int) -> dict:
     """
-    Normalise a RadImageNet-VQA row.
+    Normalise a RadImageNet-VQA benchmark split row.
 
-    The HuggingFace dataset (raidium/RadImageNet-VQA, alignment config) uses a
-    conversations + metadata schema:
-      conversations: [
-        {"from": "human",    "value": "<image>\\nDescribe the clinical findings..."},
-        {"from": "template", "value": "CT examination of the abdomen ..."},
-      ]
-      metadata: {"content_type": "description", "modality": "ct", "pathology": "...", ...}
-
-    All items in the alignment config are open-ended image descriptions (no MCQ/Yes-No).
+    Schema (raidium/RadImageNet-VQA, config=benchmark, split=test, 9K items):
+      image         – PIL image
+      question      – string
+      choices       – list of strings for MCQ, None otherwise
+      answer        – letter (A/B/C/D) for MCQ, "yes"/"no" for closed, text for open
+      question_type – "multiple_choice" | "closed" | "open"
+      metadata      – {content_type, correct_text, is_abnormal, location, modality, pathology, question_id}
     """
-    convs = item.get("conversations") or []
-    meta  = item.get("metadata") or {}
+    meta = item.get("metadata") or {}
+    raw_qt = str(item.get("question_type") or "").lower()
 
-    # Extract question from human turn, strip <image> tag
-    question = ""
-    for turn in convs:
-        if turn.get("from") == "human":
-            question = str(turn.get("value") or "").replace("<image>", "").strip()
-            break
-
-    # Extract answer from template/assistant turn
-    answer = ""
-    for turn in convs:
-        if turn.get("from") in ("template", "gpt", "assistant"):
-            answer = str(turn.get("value") or "").strip()
-            break
-
-    # Fallback to flat fields (for custom local parquet with different schema)
-    if not question:
-        question = str(item.get("question") or item.get("Question") or item.get("query") or "")
-    if not answer:
-        answer = str(item.get("answer") or item.get("Answer") or item.get("label") or item.get("gt") or "")
-
-    modality = str(meta.get("modality") or item.get("modality") or "").upper()
+    if raw_qt == "multiple_choice":
+        q_type = "mcq"
+        raw_choices = item.get("choices") or []
+        options = [{"key": k, "value": str(v)} for k, v in zip("ABCD", raw_choices)]
+    elif raw_qt == "closed":
+        q_type = "yes_no"
+        options = []
+    else:
+        q_type = "open"
+        options = []
 
     return {
-        "id": str(item.get("id") or item.get("image_id") or f"radimagenet-{idx}"),
+        "id": str(meta.get("question_id") or f"radimagenet-{idx}"),
         "benchmark": "RadImageNet-VQA",
-        "question": question,
-        "answer": answer,
-        "options": [],
-        "image": item.get("image") or item.get("img") or None,
-        "image_format": "png",
+        "question": str(item.get("question") or ""),
+        "answer": str(item.get("answer") or ""),
+        "options": options,
+        "image": item.get("image"),
+        "image_format": "jpeg",
         "meta": {
-            "modality": modality,
-            "question_type": "open",  # alignment config is description-only
+            "question_type": q_type,
+            "modality": str(meta.get("modality") or "").upper(),
             "pathology": str(meta.get("pathology") or ""),
+            "location": str(meta.get("location") or ""),
             "source": "RadImageNet-VQA",
         },
     }
 
 
-def _load_radimagenet_local(limit: int = None) -> list:
-    """
-    Load RadImageNet-VQA from data/radimagenet_vqa_*.parquet chunks via pyarrow.
-    Decodes image bytes → PIL on the fly. Stops at `limit` items.
-    """
-    import glob as _glob
-    import io
-    import pyarrow.parquet as pq
-    from PIL import Image as _PILImage
-
-    files = sorted(_glob.glob("data/radimagenet_vqa_*.parquet"))
-
-    if not files:
-        return None
-
-    print(f"  {len(files)} lokale Chunk(s) gefunden, lade via pyarrow...")
-
-    def _decode_image(val):
-        """Convert parquet image value (bytes dict or raw bytes) → PIL Image."""
-        try:
-            if isinstance(val, dict):
-                raw = val.get("bytes") or val.get("data")
-            elif isinstance(val, (bytes, bytearray)):
-                raw = val
-            else:
-                return None
-            return _PILImage.open(io.BytesIO(raw)) if raw else None
-        except Exception:
-            return None
-
-    def _decode_cell(key, val):
-        """Unwrap pyarrow scalars and decode images."""
-        import pyarrow as pa
-        if isinstance(val, pa.lib.BaseArrowObject):
-            val = val.as_py()
-        if key == "image":
-            return _decode_image(val)
-        # conversations / metadata come back as dicts/lists already via as_py()
-        return val
-
-    items = []
-    for fpath in files:
-        pf = pq.ParquetFile(fpath)
-        for batch in pf.iter_batches(batch_size=256):
-            columns = {col: batch.column(col).to_pylist() for col in batch.schema.names}
-            n = batch.num_rows
-            for i in range(n):
-                row = {}
-                for col, vals in columns.items():
-                    v = vals[i]
-                    if col == "image":
-                        v = _decode_image(v)
-                    row[col] = v
-                items.append(row)
-                if limit is not None and len(items) >= limit:
-                    return items
-    return items
-
-
 def load_radimagenet_vqa(limit=None):
     """
-    Loads the RadImageNet-VQA dataset (CT, MRI, X-ray image descriptions).
+    Loads the RadImageNet-VQA benchmark test split (9K items, CT/MRI/X-ray).
 
-    Uses the raidium/RadImageNet-VQA alignment training set, which contains
-    750K open-ended image description items (no MCQ/Yes-No in this config).
-    All questions ask the model to describe clinical findings for a given image.
+    Uses raidium/RadImageNet-VQA, config=benchmark, split=test:
+      - 2000 multiple_choice (MCQ, A/B/C/D) → Accuracy
+      - 5000 closed (yes/no)                → Exact-match Accuracy
+      - 2000 open (free-text pathology)     → WBSS + LLM-as-a-Judge
 
-    Priority:
-    1) Local parquet via env var RADIMAGENET_VQA_PARQUET_PATH (single file)
-    2) Auto-detect data/radimagenet_vqa_*.parquet (numbered chunks)
-    3) Auto-detect data/radimagenet*.parquet (single file)
-
-    HuggingFace is NOT used as fallback — dataset must be available locally.
-    Download: see README for instructions.
+    Download (once):
+      HF_TOKEN=hf_... python3 -c "
+      from datasets import load_dataset; import os
+      ds = load_dataset('raidium/RadImageNet-VQA', name='benchmark', split='test',
+                        token=os.environ['HF_TOKEN'])
+      ds.to_parquet('data/radimagenet_vqa_benchmark.parquet')"
 
     Note: Requires a vision-capable LLM (VLM).
     """
-    print("--- Lade RadImageNet-VQA (CT/MRT/Röntgen Bildverständnis) ---")
+    print("--- Lade RadImageNet-VQA (CT/MRT/Röntgen Benchmark) ---")
 
-    items = _load_radimagenet_local(limit=limit)
-
-    if items is None:
+    if not _RADIMAGENET_BENCHMARK_PATH.exists():
         raise FileNotFoundError(
-            "RadImageNet-VQA nicht gefunden: data/radimagenet_vqa_000.parquet\n"
-            "Download (einmalig, ~750K Items):\n"
-            "  python3 -c \"\n"
-            "  from datasets import load_dataset\n"
-            "  ds = load_dataset('raidium/RadImageNet-VQA', name='alignment', split='train')\n"
-            "  for i in range(0, len(ds), 50000):\n"
-            "      ds.select(range(i, min(i+50000, len(ds)))).to_parquet(f'data/radimagenet_vqa_{i//50000:03d}.parquet')\n"
-            "  \"\n"
-            "Dateien ablegen als: data/radimagenet_vqa_000.parquet, data/radimagenet_vqa_001.parquet, ..."
+            f"RadImageNet-VQA benchmark split nicht gefunden: {_RADIMAGENET_BENCHMARK_PATH}\n"
+            "Download:\n"
+            "  HF_TOKEN=hf_... python3 -c \"\n"
+            "  from datasets import load_dataset; import os\n"
+            "  ds = load_dataset('raidium/RadImageNet-VQA', name='benchmark', split='test',\n"
+            "                    token=os.environ['HF_TOKEN'])\n"
+            "  ds.to_parquet('data/radimagenet_vqa_benchmark.parquet')\""
         )
 
+    items = _load_local_parquet(str(_RADIMAGENET_BENCHMARK_PATH))
+    if limit:
+        items = items[:limit]
+
     print(f"  {len(items)} Items geladen.")
-    return [_format_radimagenet_item(item, idx) for idx, item in enumerate(items)]
+    return [_format_radimagenet_benchmark_item(item, idx) for idx, item in enumerate(items)]
 
 
 # ---------------------------------------------------------------------------
@@ -399,7 +329,7 @@ def load_radbench(limit=None):
     Evaluation:
       - Closed-ended MCQ   → letter-accuracy (rule-based)
       - Closed-ended Yes/No → exact-match accuracy
-      - Open-ended          → BLEU + LLM-as-a-Judge
+      - Open-ended          → WBSS + LLM-as-a-Judge
 
     Download: https://github.com/harrison-ai/radbench
     Datei ablegen als: data/radbench.csv
