@@ -312,10 +312,12 @@ def score_vqa_open(df: pd.DataFrame) -> pd.DataFrame:
     Primary metric: WBSS (Wu-Palmer semantic similarity via WordNet).
     LLM-as-a-Judge is done separately via evaluate_vqa_with_judge().
     """
+    import multiprocessing as _mp
     df = df.copy()
-    df["wbss"] = df.apply(
-        lambda r: _wbss(str(r["model_answer"]), str(r["reference_answer"])), axis=1
-    )
+    pairs = list(zip(df["model_answer"].astype(str), df["reference_answer"].astype(str)))
+    workers = min(_mp.cpu_count(), 8)
+    with _mp.Pool(workers) as pool:
+        df["wbss"] = pool.starmap(_wbss, pairs)
     return df
 
 

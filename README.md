@@ -14,7 +14,7 @@ A modular, resumable evaluation framework for benchmarking LLMs and Vision-Langu
 | VQA-Med-2019 | Medical image VQA | ✅ | Open WBSS + LLM-Judge |
 | RadImageNet-VQA | CT/MRI/X-ray image VQA | ✅ | Open WBSS + LLM-Judge |
 | Label Extraction | NER from radiology reports | — | Micro F1 |
-| RadioRAG | Open-ended radiology QA | — | WBSS + LLM-Judge |
+| RadioRAG | Text MCQ (Radiology) | — | Accuracy |
 
 > **Text-only models** can still run on VLM benchmarks — they receive no image and results serve as a text-only baseline.
 
@@ -65,8 +65,8 @@ Most benchmarks load automatically. A few require manual download:
 | VQA-Med-2019 | Auto (HuggingFace) or [simwit/vqa-med-2019](https://huggingface.co/datasets/simwit/vqa-med-2019) | `data/vqa_med_2019.parquet` |
 | RadImageNet-VQA | [raidium/RadImageNet-VQA](https://huggingface.co/datasets/raidium/RadImageNet-VQA) (see below) | `data/radimagenet_vqa_000.parquet` … |
 | RadBench | [harrison-ai/radbench](https://github.com/harrison-ai/radbench) | `data/radbench.csv` |
-| RaR | Contact authors via [paper](https://www.nature.com/articles/s41746-025-02250-5) | `data/rar-test.parquet` |
-| RadioRAG | [tayebiarasteh/RadioRAG](https://github.com/tayebiarasteh/RadioRAG) | `data/radiorag.json` |
+| RaR | Contact authors via [paper](https://www.nature.com/articles/s41746-025-02250-5) | `data/RaR_dataset_WithAnswer.csv` |
+| RadioRAG | Contact authors via [GitHub](https://github.com/tayebiarasteh/RadioRAG) | `data/RadioRAG_WithOptions_WithAnswer.csv` |
 | Label Extraction | Your own radiology NER dataset | `data/extraction.parquet` |
 
 Files placed at the paths above are detected automatically — no environment variables needed.
@@ -189,10 +189,26 @@ python evaluate.py results/radiorag_results.csv --type open_qa --judge
 
 ---
 
+## Benchmark Interpretation
+
+| Benchmark | What it measures | Metric | Random baseline | Notes |
+|-----------|-----------------|--------|:-:|-------|
+| MedQA | USMLE Step 1–3 clinical reasoning (4-choice MCQ) | Accuracy | 25% | General medicine knowledge |
+| RaR | Radiology board-style MCQ (5-choice) | Accuracy | 20% | Domain-specific radiology reasoning |
+| RadioRAG | Radiology factual QA (4-choice MCQ) | Accuracy | 25% | Originally open-ended; converted to MCQ |
+| RadBench MCQ | Chest X-ray clinical reasoning with image (4-choice) | Accuracy | 25% | Requires VLM; Radiopaedia cases only (n=285) |
+| RadBench Yes/No | Binary image questions (e.g. "Is there a pneumothorax?") | Accuracy | 50% | Requires VLM |
+| RadBench Open | Free-text description of X-ray findings | WBSS | — | Semantic similarity; > 60% is good |
+| VQA-Med-2019 | Medical image VQA: modality, organ, plane, abnormality | WBSS / LLM-Judge | — | 500-item validation set (ImageCLEF 2019) |
+| RadImageNet-VQA | CT/MRI pathology description (open), binary (yes/no), MCQ | WBSS / LLM-Judge / Accuracy | 25–50% | 9K-item benchmark split; 1K images |
+| Label Extraction | Entity extraction from radiology reports (NER) | Micro F1 | — | Higher = more complete entity set |
+
+---
+
 ## Metrics
 
 ### Accuracy
-Rule-based letter extraction (A/B/C/D) for MCQ; exact match for Yes/No. Random baseline: 25% (4-choice MCQ), 50% (Yes/No).
+Rule-based letter extraction (A/B/C/D) for MCQ; exact match for Yes/No. Random baseline: 25% (4-choice MCQ), 20% (5-choice), 50% (Yes/No).
 
 ### WBSS — Word-Based Semantic Similarity
 Measures semantic similarity between model answer and reference answer using Wu-Palmer similarity from WordNet. Gives partial credit for synonyms and paraphrases.
@@ -208,70 +224,26 @@ Measures semantic similarity between model answer and reference answer using Wu-
 Used for Label Extraction. TP/FP/FN aggregated across all items before computing precision/recall (following RadGraph protocol).
 
 ### LLM-as-a-Judge
-A second LLM (configured in `config.yaml` under `judge:`) scores each open-ended answer as 0 or 1. Requires `--judge` flag or `run_judge: true`. Human expert baseline on RadioRAG: ~63%.
+A second LLM (configured in `config.yaml` under `judge:`) scores each open-ended answer as 0 or 1. Requires `--judge` flag or `run_judge: true`.
 
 ---
 
-## Reference Results (google/gemma-4-26B-A4B-it)
+## Citations
 
-| Benchmark | Metric | Score |
-|-----------|--------|-------|
-| MedQA | Accuracy | 79.89% |
-| RadBench (Radiopaedia only, n=285) | MCQ Accuracy | 47.62% |
-| RadBench | Yes-No Accuracy | 58.11% |
-| RadBench | Open WBSS | 65.78% |
-| VQA-Med-2019 | Open WBSS | 50.44% |
-| VQA-Med-2019 | LLM-Judge | 48.60% |
-| RadImageNet-VQA (n=5000) | Open WBSS | 57.40% |
-| RadImageNet-VQA | LLM-Judge | 28.04% |
+If you use this framework or the underlying datasets in your work, please cite the original sources.
 
----
+**Datasets**
 
-## Project Structure
+- **MedQA**: Jin et al. (2021). *What Disease does this Patient Have? A Large-scale Open Domain Question Answering Dataset from Medical Exams.* Applied Sciences. https://arxiv.org/abs/2009.13081
+- **VQA-Med-2019**: Ben Abacha et al. (2019). *VQA-Med: Overview of the Medical Visual Question Answering Task at ImageCLEF 2019.* CLEF 2019. https://www.imageclef.org/2019/medical/vqa
+- **RadImageNet-VQA**: Butsanets et al. (2025). *RadImageNet-VQA.* https://huggingface.co/datasets/raidium/RadImageNet-VQA
+- **RadBench**: Harrison.ai (2024). *RadBench: Benchmarking Large Language Models for Radiology.* https://github.com/harrison-ai/radbench
+- **RaR**: Contact authors via https://www.nature.com/articles/s41746-025-02250-5
+- **RadioRAG**: Tayebi Arasteh et al. (2024). *RadioRAG: Factual Large Language Models for Enhanced Diagnostics in Radiology Using Dynamic Retrieval Augmented Generation.* https://github.com/tayebiarasteh/RadioRAG
+- **Label Extraction / RadGraph**: Jain et al. (2021). *RadGraph: Extracting Clinical Entities and Relations from Radiology Reports.* NeurIPS 2021. https://physionet.org/content/radgraph/
 
-```
-Med_Benchmarks_LLMs/
-├── core/
-│   ├── client.py             # LLM client — text + vision (base64)
-│   └── logger.py             # RunLogger — tees stdout to log file
-├── loaders/
-│   ├── text_benchmarks.py    # MedQA, RaR, Label Extraction, RadioRAG
-│   └── vision_benchmarks.py  # RadBench, VQA-Med-2019, RadImageNet-VQA
-├── tasks/
-│   ├── mcq.py                # MCQ task runner
-│   ├── vqa.py                # VQA task runner (image + text)
-│   ├── extraction.py         # Label extraction runner
-│   └── open_qa.py            # Open-ended QA runner
-├── scripts/
-│   └── download_radbench_images.py   # Download RadBench X-ray images
-├── main.py                   # Entry point
-├── evaluate.py               # All evaluation metrics
-├── config.default.yaml       # Config template (tracked in git)
-├── config.yaml               # Your config with credentials (git-ignored)
-├── data/                     # Local dataset files (git-ignored)
-└── results/                  # Output CSVs + reports (git-ignored)
-```
+**Evaluation Methodology**
 
----
+- **WBSS**: Ben Abacha et al. (2019), see VQA-Med-2019 above.
+- **LLM-as-a-Judge**: Zheng et al. (2023). *Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena.* NeurIPS 2023. https://arxiv.org/abs/2306.05685
 
-## HPC / Offline Environments
-
-If `$HOME` is read-only (common on HPC clusters), set:
-
-```bash
-export HF_HOME=/path/to/writable/dir/.cache/huggingface
-```
-
-The framework will detect a read-only `$HOME` and fall back to `.cache/huggingface/` inside the project directory automatically.
-
-For fully offline runs, download all datasets beforehand and place them in `data/` as described above.
-
----
-
-## SSL / Self-signed Certificates
-
-```yaml
-server:
-  verify_ssl: false           # disable (internal/testing only)
-  verify_ssl: "certs/ca.pem"  # provide CA bundle (recommended for production)
-```
