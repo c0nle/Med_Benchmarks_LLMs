@@ -48,7 +48,7 @@ judge:
 #                     HF:    raidium/RadImageNet-VQA
 #   label_extraction – Entity extraction from radiology reports; metric: Micro F1
 #                     Based on: RadGraph (Jain et al. NeurIPS 2021)
-#   radiorag        – Open-ended radiology QA; metric: LLM-Judge accuracy (binary)
+#   radiorag        – Radiology MCQ; metric: Accuracy
 #                     Paper: Tayebi Arasteh et al. 2024 (https://arxiv.org/abs/2407.15621)
 #                     GitHub: https://github.com/tayebiarasteh/RadioRAG
 #                     Note: dataset NOT on HuggingFace — local file required

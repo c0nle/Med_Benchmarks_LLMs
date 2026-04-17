@@ -6,7 +6,7 @@ all medical entities (findings, diagnoses, anatomical structures, pathologies)
 as a comma-separated list.
 
 Results CSV columns: id, benchmark, text, reference_entities, model_entities
-Evaluation: token-set F1 per item, macro-averaged (handled by evaluate.py).
+Evaluation: Micro F1 (TP/FP/FN aggregated globally, RadGraph protocol), handled by evaluate.py.
 """
 import os
 import csv

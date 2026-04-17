@@ -6,7 +6,7 @@ RadImageNet-VQA and RadBench have multiple question types:
   - Yes/No  : exact-match accuracy
   - Open    : free-text answer → evaluated with LLM-as-a-Judge
 
-VQA-Med-2019 is open-ended only (BLEU primary metric).
+VQA-Med-2019 is open-ended only (WBSS + LLM-Judge).
 
 Item schema (from vision_benchmarks.py):
   { id, benchmark, question, answer, image (PIL|None), image_format, meta }
@@ -45,13 +45,13 @@ def _detect_question_type(item: dict) -> str:
 
 
 def _build_mcq_prompt(item: dict) -> str:
-    options_str = ", ".join(
-        f"{opt['key']}: {opt['value']}" for opt in item.get("options", [])
-    )
+    opts = item.get("options", [])
+    options_str = ", ".join(f"{opt['key']}: {opt['value']}" for opt in opts)
+    keys = "/".join(opt["key"] for opt in opts) if opts else "A/B/C/D"
     return (
         f"Question about the medical image: {item['question']}\n"
         f"Options: {options_str}\n"
-        "Reply with only the correct letter (A/B/C/D)."
+        f"Reply with only the correct letter ({keys})."
     )
 
 

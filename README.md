@@ -63,7 +63,7 @@ Most benchmarks load automatically. A few require manual download:
 |-----------|--------|----------|
 | MedQA | Auto (HuggingFace) or [openlifescienceai/medqa](https://huggingface.co/datasets/openlifescienceai/medqa) | `data/medqa-test.parquet` |
 | VQA-Med-2019 | Auto (HuggingFace) or [simwit/vqa-med-2019](https://huggingface.co/datasets/simwit/vqa-med-2019) | `data/vqa_med_2019.parquet` |
-| RadImageNet-VQA | [raidium/RadImageNet-VQA](https://huggingface.co/datasets/raidium/RadImageNet-VQA) (see below) | `data/radimagenet_vqa_000.parquet` … |
+| RadImageNet-VQA | [raidium/RadImageNet-VQA](https://huggingface.co/datasets/raidium/RadImageNet-VQA) (see below) | `data/radimagenet_vqa_benchmark.parquet` |
 | RadBench | [harrison-ai/radbench](https://github.com/harrison-ai/radbench) | `data/radbench.csv` |
 | RaR | Contact authors via [paper](https://www.nature.com/articles/s41746-025-02250-5) | `data/RaR_dataset_WithAnswer.csv` |
 | RadioRAG | Contact authors via [GitHub](https://github.com/tayebiarasteh/RadioRAG) | `data/RadioRAG_WithOptions_WithAnswer.csv` |
@@ -71,17 +71,16 @@ Most benchmarks load automatically. A few require manual download:
 
 Files placed at the paths above are detected automatically — no environment variables needed.
 
-#### RadImageNet-VQA (large dataset — download once)
+#### RadImageNet-VQA (benchmark test split, 9K items)
 
 ```bash
-python3 -c "
-from datasets import load_dataset
+HF_TOKEN="hf_..." python3 -c "
 import os
-os.makedirs('data', exist_ok=True)
-ds = load_dataset('raidium/RadImageNet-VQA', name='alignment', split='train')
-for i in range(0, len(ds), 50000):
-    ds.select(range(i, min(i+50000, len(ds)))).to_parquet(f'data/radimagenet_vqa_{i//50000:03d}.parquet')
-print('Done.')
+from datasets import load_dataset
+ds = load_dataset('raidium/RadImageNet-VQA', name='benchmark', split='test',
+                  token=os.environ['HF_TOKEN'])
+ds.to_parquet('data/radimagenet_vqa_benchmark.parquet')
+print('Done.', len(ds), 'items')
 "
 ```
 
@@ -160,9 +159,10 @@ benchmark_settings:
 
 | File | Contents |
 |------|----------|
-| `results/{benchmark}_results.csv` | Raw model answers, one row per question |
-| `results/{benchmark}_report.jsonl` | Full evaluation report with all metrics |
+| `results/run_<timestamp>/{benchmark}_results.csv` | Raw model answers, one row per question |
+| `results/run_<timestamp>/{benchmark}_report.jsonl` | Full evaluation report with all metrics |
 | `results/run_<timestamp>.log` | Full run log including verbose per-question output |
+| `results/benchmark_results_<model>.png` | Bar chart of all benchmark scores |
 
 ---
 
@@ -171,20 +171,17 @@ benchmark_settings:
 Evaluation runs automatically after each benchmark. To re-evaluate existing results manually:
 
 ```bash
-# MCQ benchmarks (MedQA, RaR)
-python evaluate.py results/medqa_results.csv --type mcq
+# MCQ benchmarks (MedQA, RaR, RadioRAG)
+python evaluate.py results/run_<timestamp>/medqa_results.csv --type mcq
 
 # VQA benchmarks (RadBench, VQA-Med-2019, RadImageNet-VQA)
-python evaluate.py results/radbench_results.csv --type vqa
+python evaluate.py results/run_<timestamp>/radbench_results.csv --type vqa
 
 # VQA + LLM-as-a-Judge for open-ended questions
-python evaluate.py results/radimagenet_vqa_results.csv --type vqa --judge
+python evaluate.py results/run_<timestamp>/radimagenet_vqa_results.csv --type vqa --judge
 
 # Label Extraction
-python evaluate.py results/label_extraction_results.csv --type extraction
-
-# RadioRAG + LLM-as-a-Judge (primary metric)
-python evaluate.py results/radiorag_results.csv --type open_qa --judge
+python evaluate.py results/run_<timestamp>/label_extraction_results.csv --type extraction
 ```
 
 ---
