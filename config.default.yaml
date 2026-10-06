@@ -1,22 +1,28 @@
 server:
-  # Base-URL of LLM Server
+  # Base-URL of the OpenAI-compatible LLM server (vLLM / LiteLLM)
   url: "https://your-llm-server:4000/v1"
-  client: "openai_sdk"
-  # Enter model name to evaluate
+  client: "openai_sdk"            # "openai_sdk" | "requests"
+  # Enter model name to evaluate (or pass --model on the command line)
   model_name: "Enter your model name here"
 
   verify_ssl: false
   api_key_env: "LLM_SERVER_API_KEY"
-  api_key: ""
+  api_key: ""                     # never committed; run_info files never contain it
+  # Sampling seed sent with every request (null = do not send one)
+  seed: 42
   # 2048-token JSON answers (label extraction) take ~90 s at ~22 tok/s
   timeout_s: 300
   # Retries for transient errors (timeout, connection, 429, 5xx) with backoff
   # retry_backoff_s * 2^attempt; the benchmark stops after max_consecutive_errors
-  # failures in a row (resume with: python main.py --run-dir results/run_<ts>)
-  max_retries: 3
-  retry_backoff_s: 10
-  max_consecutive_errors: 20
-  # Optional extra request fields, e.g. to disable thinking of reasoning models:
+  # failed requests in a row (resume with: python main.py --run-dir results/run_<ts>).
+  # Worst case until the stop: max_consecutive_errors * ((max_retries+1) * timeout_s + backoff)
+  # = 10 * (3 * 300 s + 15 s) ≈ 2.5 h sequentially, ≈ 40 min with concurrency 4.
+  # 401/403/404 (wrong key / URL / model) stop the run immediately.
+  max_retries: 2
+  retry_backoff_s: 5
+  max_consecutive_errors: 10
+  # Optional extra request fields (sent with every request of the evaluated model),
+  # e.g. to disable thinking of reasoning models:
   # extra_body:
   #   chat_template_kwargs:
   #     enable_thinking: false
@@ -24,6 +30,7 @@ server:
 # Separate model used as LLM-as-a-Judge for open-ended benchmarks.
 # Any OpenAI-compatible endpoint; here the same LLM server as above.
 # Key: api_key below or the environment variable named in api_key_env.
+# Sampling settings of the judge come only from this block (not benchmark_settings).
 judge:
   url: "https://your-llm-server:4000/v1"
   client: "openai_sdk"
@@ -32,8 +39,12 @@ judge:
   api_key_env: "LLM_SERVER_API_KEY"
   api_key: ""
   timeout_s: 120
-  # Optional extra request fields. For reasoning models (e.g. Qwen3.5) disable
-  # thinking, otherwise it consumes max_tokens and the answer is empty:
+  temperature: 0
+  max_tokens: 512                 # verdict is "0"/"1", the rest is room for reasoning
+  # seed: 42                      # default: server.seed
+  # Optional extra request fields (sent with every judge request). For reasoning
+  # models (e.g. Qwen3.5) disable thinking, otherwise it consumes max_tokens and
+  # the answer is empty:
   # extra_body:
   #   chat_template_kwargs:
   #     enable_thinking: false
@@ -50,13 +61,15 @@ judge:
 #   benchmark: all
 #
 # Available benchmarks:
-#   medqa           – USMLE MCQ; metric: Accuracy
+#   medqa           – USMLE MCQ (4 options); metric: Accuracy
 #                     Paper: Jin et al. 2021 (https://arxiv.org/abs/2009.13081)
-#   rar             – Reasoning and Radiology MCQ; metric: Accuracy
+#   rar             – Reasoning and Radiology MCQ (5 options); metric: Accuracy
 #                     Paper: Wind et al. 2025, npj Digital Medicine
-#   radbench        – RadBench (harrison.ai) clinical MCQ; metric: Accuracy
+#   radbench        – RadBench (harrison.ai) X-ray image VQA (VLM needed):
+#                     MCQ / yes-no accuracy, open questions: exact match + LLM-Judge
 #                     Paper: https://harrison-ai.github.io/radbench/
-#   vqa_med_2019    – VQA-Med-2019 image VQA (VLM needed); metric: WBSS + LLM-Judge
+#   vqa_med_2019    – VQA-Med-2019 image VQA (VLM needed); metrics: exact match
+#                     (official), LLM-Judge; WBSS as secondary metric
 #                     Paper: Ben Abacha et al. 2019, ImageCLEF
 #   radimagenet_vqa – RadImageNet-VQA CT/MRI (VLM needed)
 #                     Metrics: MCQ Accuracy, Yes/No Accuracy, LLM-Judge (open)
@@ -64,18 +77,18 @@ judge:
 #                     HF:    raidium/RadImageNet-VQA
 #   label_extraction – Entity extraction from radiology reports; metric: Micro F1
 #                     Based on: RadGraph (Jain et al. NeurIPS 2021)
-#   radiorag        – Radiology MCQ; metric: Accuracy
+#   radiorag        – Radiology MCQ (4 options); metric: Accuracy
 #                     Paper: Tayebi Arasteh et al. 2024 (https://arxiv.org/abs/2407.15621)
 #                     GitHub: https://github.com/tayebiarasteh/RadioRAG
 #                     Note: dataset NOT on HuggingFace — local file required
 #   label_extraction_mamma – Strukturierte Label-Extraktion aus deutschen Mamma-MRT-Befunden
-#                     Metriken: Accuracy + Macro-F1 (Menopause, BIRADS, ACR),
+#                     Metriken: Accuracy + Macro-F1 (Menopause, BIRADS, ACR = BPE),
 #                               Laesionen: Typ-Micro-F1 + Exact Match pro Seite (Hauptmetrik),
-#                               zusaetzlich Anzahl-basiert (Multiset)
+#                               zusaetzlich Anzahl-basiert (Multiset); 95%-Bootstrap-CIs
 #                     Daten: data/label_extraction/ (nicht oeffentlich — lokal erforderlich)
 #   label_extraction_arm – Binaere Label-Extraktion (mit Zitat) aus deutschen Arm-Roentgenbefunden
 #                     Metriken: F1 pro Label, Macro-/Micro-F1, Sensitivitaet/Spezifizitaet,
-#                               Citation-Match, 95%-Bootstrap-CIs
+#                               wortgetreue Zitat-Rate (verbatim citation rate), 95%-Bootstrap-CIs
 #                     Daten: data/label_extraction/Label_Extraction_Kilian/
 #                     Paper: Kreutzer et al. Eur Radiol 2025
 #                            https://doi.org/10.1007/s00330-025-12102-1
@@ -85,9 +98,11 @@ benchmark_settings:
   limit_samples: null # null = whole dataset (largest: radimagenet_vqa with 9000 items); e.g. 5 for a quick test
   temperature: 0.0
   max_tokens: 256
+  # parallel requests per benchmark (worker threads); 1 = sequential
+  concurrency: 4
   # optional: sleep between requests to avoid rate limits
   sleep_s: 0
-  # optional: abort if too many errors
+  # optional: stop a benchmark after this many failed requests (run is flagged INCOMPLETE)
   max_errors: 200
 
 # Per-Task-Overrides (z.B. max_tokens fuer JSON-intensive Tasks)
