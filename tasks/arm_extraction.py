@@ -12,23 +12,34 @@ Output-Schema:
 }
 
 Results-CSV-Spalten:
-    id, benchmark, region, phase, gt_labels_json, model_raw, model_labels_json, parse_error
+    id, benchmark, region, phase, gt_labels_json, model_raw, model_labels_json, parse_error,
+    citation_check_json, finish_reason, completion_tokens
+
+model_labels_json: {label: {"finding": true|false|null, "citation": str}}; null = the label
+is missing in the model answer (scored as missing, not as negative).
+citation_check_json: {label: bool} for every label the model marked present with a
+citation: True if the citation occurs verbatim in the report (checked at run time,
+because the report text is not stored).
+finish_reason / completion_tokens come from client.last_meta (empty if not provided).
 """
-import csv
 import json
-import os
 import re
-import time
 
-import pandas as pd
-
-from tasks.mcq import _parse_benchmark_settings
+from tasks import _extraction_runner as _runner
 
 _FIELDNAMES = [
     "id", "benchmark", "region", "phase",
     "gt_labels_json", "model_raw", "model_labels_json", "parse_error",
-    "citation_check_json",
+    "citation_check_json", "finish_reason", "completion_tokens",
 ]
+
+# Explicit system prompt: the client's default one asks for concise *English* answers,
+# which conflicts with verbatim citations from German reports. No language constraint
+# here; the user prompt asks for citations in the original language.
+_SYSTEM_PROMPT_ARM = (
+    "You are a medical AI assistant specialised in the structured analysis of "
+    "radiology reports. Reply only with valid JSON, without explanatory text."
+)
 
 
 _MIN_CITATION_CHARS = 4
@@ -70,6 +81,8 @@ def check_citations(parsed: dict, report_text: str) -> dict:
 
 
 def _build_prompt(text: str, template_labels: list) -> str:
+    # Label names only: no authoritative label definitions / annotation guidelines exist
+    # in the dataset folder (templates contain names only), so none are invented here.
     entries = "\n".join(
         f'  "{label}": {{"finding": true/false, "citation": "..."}}'
         for label in template_labels
@@ -131,9 +144,13 @@ def _parse_response(raw: str, template_labels: list) -> tuple[dict, bool]:
             entry = by_lower.get(label.lower())
             if entry is not None:
                 n_found += 1
-            if isinstance(entry, dict):
+            if entry is None:
+                # Label not answered: keep it as missing (finding None), not as negative
+                result[label] = {"finding": None, "citation": ""}
+            elif isinstance(entry, dict):
+                finding = entry.get("finding")
                 result[label] = {
-                    "finding":  _as_bool(entry.get("finding")),
+                    "finding":  None if finding is None else _as_bool(finding),
                     "citation": str(entry.get("citation") or ""),
                 }
             else:
@@ -160,88 +177,41 @@ def _parse_response(raw: str, template_labels: list) -> tuple[dict, bool]:
 # Task Runner
 # ---------------------------------------------------------------------------
 
+def _process_item(client, item: dict):
+    """Runs in a worker thread: ask, parse, check citations against the report text."""
+    item_id = str(item.get("id"))
+    template_labels = item.get("template_labels", [])
+    prompt = _build_prompt(item["text"], template_labels)
+    model_answer, meta = _runner.call_model(client, prompt, _SYSTEM_PROMPT_ARM)
+
+    is_error = isinstance(model_answer, str) and model_answer.startswith("Error:")
+    parsed, parse_error = _parse_response(model_answer, template_labels)
+
+    row = {
+        "id":              item_id,
+        "benchmark":       item.get("benchmark", "LabelExtractionArm"),
+        "region":          item.get("region", ""),
+        "phase":           item.get("phase", ""),
+        "gt_labels_json":  json.dumps(item.get("gt_labels", {}), ensure_ascii=False),
+        "model_raw":       model_answer or "",
+        "model_labels_json": json.dumps(parsed, ensure_ascii=False),
+        "parse_error":     str(parse_error),
+        # Needs the report text, so it is computed here (the text is not stored in the CSV)
+        "citation_check_json": json.dumps(
+            check_citations(parsed, item["text"]), ensure_ascii=False
+        ),
+        **_runner.meta_columns(meta),
+    }
+    status = "ERROR" if is_error else f"parse_err={parse_error}"
+    if meta.get("finish_reason") == "length":
+        status += " (truncated)"
+    return row, is_error, status
+
+
 def run(config: dict, client, data: list, results_path: str, logger=None) -> str:
-    sleep_s, max_errors = _parse_benchmark_settings(config)
-
-    completed_ids: set = set()
-    if os.path.exists(results_path) and os.path.getsize(results_path) > 0:
-        try:
-            existing = pd.read_csv(results_path, usecols=["id"])
-            completed_ids = set(existing["id"].dropna().astype(str).tolist())
-            if completed_ids:
-                print(f"Resume: {len(completed_ids)} Reports bereits vorhanden.")
-        except Exception:
-            pass
-
-    total     = len(data)
-    remaining = sum(1 for it in data if str(it.get("id")) not in completed_ids)
-    print(f"  {total} Reports  ({remaining} remaining)...")
-
-    start         = time.time()
-    processed_new = 0
-    errors        = 0
-
-    file_exists = os.path.exists(results_path) and os.path.getsize(results_path) > 0
-    with open(results_path, "a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=_FIELDNAMES)
-        if not file_exists:
-            writer.writeheader()
-
-        for idx, item in enumerate(data, start=1):
-            item_id = str(item.get("id"))
-            if item_id in completed_ids:
-                continue
-
-            template_labels = item.get("template_labels", [])
-            prompt          = _build_prompt(item["text"], template_labels)
-            model_answer    = client.ask_question(prompt)
-
-            is_error = isinstance(model_answer, str) and model_answer.startswith("Error:")
-            if is_error:
-                errors += 1
-
-            parsed, parse_error = _parse_response(model_answer, template_labels)
-
-            if logger:
-                status = "ERROR" if is_error else f"parse_err={parse_error}"
-                logger.verbose(
-                    f"[{idx:>{len(str(total))}}/{total}] {item_id}  →  {status}"
-                )
-
-            if is_error and max_errors is not None and errors >= max_errors:
-                print(f"Abbruch: max_errors={max_errors} erreicht.")
-                break
-
-            writer.writerow({
-                "id":              item_id,
-                "benchmark":       item.get("benchmark", "LabelExtractionArm"),
-                "region":          item.get("region", ""),
-                "phase":           item.get("phase", ""),
-                "gt_labels_json":  json.dumps(item.get("gt_labels", {}), ensure_ascii=False),
-                "model_raw":       model_answer or "",
-                "model_labels_json": json.dumps(parsed, ensure_ascii=False),
-                "parse_error":     str(parse_error),
-                "citation_check_json": json.dumps(
-                    check_citations(parsed, item["text"]), ensure_ascii=False
-                ),
-            })
-            f.flush()
-            processed_new += 1
-
-            if sleep_s > 0:
-                time.sleep(sleep_s)
-
-            if processed_new % 50 == 0:
-                elapsed = time.time() - start
-                rate    = processed_new / elapsed if elapsed > 0 else 0.0
-                eta_s   = int((remaining - processed_new) / rate) if rate > 0 else -1
-                eta     = f"{eta_s//60:02d}:{eta_s%60:02d}" if eta_s >= 0 else "?"
-                pct     = int(processed_new / remaining * 100) if remaining > 0 else 100
-                print(
-                    f"  [{processed_new:>{len(str(remaining))}}/{remaining}]"
-                    f" {pct:3d}%  {rate:.1f} q/s  ETA {eta}  errors: {errors}"
-                )
-
-    elapsed_total = time.time() - start
-    print(f"  Done: {processed_new}/{remaining}  errors: {errors}  ({elapsed_total/60:.1f} min)")
-    return results_path
+    """Concurrent + resumable; see tasks/_extraction_runner.py."""
+    return _runner.run_items(
+        config, data, results_path, _FIELDNAMES,
+        lambda item: _process_item(client, item),
+        logger=logger, unit="reports",
+    )

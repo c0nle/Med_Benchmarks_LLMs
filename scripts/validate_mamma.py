@@ -211,6 +211,15 @@ def main():
             f"neu={neue_frac:.3f}  ref={ref_val:.3f}  diff={symbol}{diff:.3f}"
         )
 
+    # The old evaluation kept BIRADS 6 as its own class: the birads6_keep sensitivity
+    # analysis (always computed) is the like-for-like comparison.
+    for side in ("birads_li", "birads_re"):
+        keep_val = report.get(f"{side}_accuracy_birads6keep_pct")
+        if keep_val is not None:
+            ref_val = _REFERENCE[f"{side}_accuracy"]
+            print(f"  {side + '_accuracy (6 kept)':<28}  neu={keep_val / 100:.3f}  "
+                  f"ref={ref_val:.3f}  diff={keep_val / 100 - ref_val:+.3f}")
+
     print()
     print("Hinweise zu erwarteten Abweichungen:")
     print("  ACR: Die alte Auswertung verglich Brustdichte-Text (z.B. 'Fast ausschliesslich Fett')")
@@ -219,7 +228,8 @@ def main():
     print("       aber das YAML-Mapping unterstuetzt diese Textvarianten.")
     print("  BIRADS 6: Die neue Pipeline mappt BIRADS 6 → 5 (konfigurierbar).")
     print("            In der alten Auswertung war BIRADS 6 eine eigene Klasse.")
-    print("            Damit kann die neue Accuracy fuer BIRADS hoeher liegen.")
+    print("            Damit kann die neue Accuracy fuer BIRADS hoeher liegen;")
+    print("            '(6 kept)' = Sensitivitaetsanalyse birads6_handling=keep (wie alt).")
     print("  Laesionen: Die Normalisierung via mamma_normalization.yaml kann Synonyme")
     print("             zusammenfuehren (z.B. 'Fibroadenom ' → 'fibroadenom').")
 

@@ -17,6 +17,12 @@ Ordnerstruktur:
             Reports_4o_1309/<id>.txt
             New_template_thumb.json     – ungültiges JSON, wird repariert
 
+Label-Definitionen: Die Templates enthalten nur Label-Namen mit leeren
+{"finding": false, "citation": ""}-Einträgen; im Datenordner gibt es keine
+Annotationsrichtlinien oder Label-Definitionen. Der Prompt enthält daher nur die Namen.
+Die Templates haben mehr Labels als die CSVs (clavicle 26/18, elbow 29/28, thumb 25/23);
+bewertet werden nur die CSV-Labels.
+
 ID-Extraktion aus Bildpfad:
     clavicle : .../ConvertedPNGs/<id>.png         → Dateiname ohne Extension
     elbow    : .../<id>/ap.png                    → vorletztes Segment

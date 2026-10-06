@@ -5,6 +5,18 @@ Lädt label_extraction_gt.xlsx und hiwi_gt_ergaenzung.xlsx,
 joined per 'ID gekürzt' (GT) = 'AnforderungsNr' (Hiwi).
 Alle IDs werden als String geladen (vermeidet Float/Exponentialdarstellung).
 
+Rolle der Dateien:
+    label_extraction_gt.xlsx   – Ground Truth (eine Zeile pro Läsion): Menopause, BIRADS
+                                 (Maximum je Seite), MR-ACR (BPE) je Seite, Läsionstypen.
+    hiwi_gt_ergaenzung.xlsx    – liefert den Befundtext ('Befund') je Untersuchung.
+                                 Die Spalten *_GT (Menopause/BIRADS/ACR) sind eine Kopie
+                                 der aus label_extraction_gt.xlsx abgeleiteten Werte:
+                                 geprüft für alle 302 Untersuchungen mit Befundtext –
+                                 0 abweichende und 0 ergänzte Werte. Sie werden nur als
+                                 Konsistenzprüfung verwendet (bei Abweichung gewinnt der
+                                 Hiwi-Wert und der Konflikt steht in meta.conflicts);
+                                 auf die aktuellen Daten haben sie keinen Einfluss.
+
 Gibt eine Liste von Items zurück: ein Item pro Untersuchung mit Befundtext (302 bei vollem Datensatz).
 
 Item-Schema:
@@ -20,7 +32,7 @@ Item-Schema:
         lesions_li: list[str]  (Simone befund > Rad Befund, links)
         lesions_re: list[str]  (Simone befund > Rad Befund, rechts)
     meta          : dict
-        conflicts : list[str]  (Hiwi-GT vs. Original-GT Konflikte)
+        conflicts : list[str]  (Hiwi-*_GT ≠ Original-GT; mit den aktuellen Daten immer leer)
         n_lesions_li, n_lesions_re: int
 """
 import logging
@@ -164,8 +176,10 @@ def load_mamma_extraction(limit=None, config=None):
         lesions_li = [t for _, r in li_rows.iterrows() if (t := _lesion_type(r)) is not None]
         lesions_re = [t for _, r in re_rows.iterrows() if (t := _lesion_type(r)) is not None]
 
-        # Hiwi-GT-Overrides (Priorität Hiwi > Original, Konflikte loggen)
-        conflicts: list[str] = []
+        # Konsistenzprüfung gegen die Hiwi-*_GT-Spalten. Diese sind eine Kopie der oben
+        # abgeleiteten Werte (geprüft: 0 Abweichungen, 0 Ergänzungen) – bei einer
+        # künftigen Abweichung gewinnt der Hiwi-Wert und der Konflikt wird protokolliert.
+        conflicts: list = []
 
         def _apply_gt(hiwi_col: str, current, field: str):
             raw = str(hiwi_row.get(hiwi_col) or "").strip()

@@ -168,8 +168,9 @@ lesion_types:
     - lk axillär
     - axillärer lymphknoten
     - vergrößerter lymphknoten
-    - lymphknotenmetastase
     - "lymphknoten ??"
+    # NOT "lymphknotenmetastase": "Lymphknoten" is the benign/normal node type of the
+    # 18-type vocabulary; a nodal metastasis is malignant -> "sonstige läsion" (below).
   "papillom":
     - papillom
     - papilloma
@@ -224,6 +225,10 @@ lesion_types:
     - atherom (cutane läsion)
     - epidermale zyste
   "sonstige läsion":
+    # Lymph-node metastasis: the vocabulary has no metastasis type. "lymphknoten" would
+    # turn a malignant finding into the benign node type; "invasives karzinom" denotes
+    # the primary breast tumour and would merge two distinct lesions in the type view.
+    - lymphknotenmetastase
     - sonstige läsion
     - sonstige
     - sonstiges
