@@ -1,7 +1,14 @@
 import requests
 import json
 import os
+import re
+import threading
+import time
 from urllib.parse import urlparse
+
+
+class ServerUnavailableError(RuntimeError):
+    """Raised after too many consecutive transient failures, so a benchmark stops early."""
 
 class MedicalLLMClient:
     def __init__(self, config):
@@ -13,6 +20,15 @@ class MedicalLLMClient:
         self.timeout_s = config.get("server", {}).get("timeout_s", 60)
         self.temperature = config.get("benchmark_settings", {}).get("temperature", 0)
         self.max_tokens = config.get("benchmark_settings", {}).get("max_tokens", None)
+        # Extra request fields, e.g. {"chat_template_kwargs": {"enable_thinking": false}}
+        # for reasoning models whose thinking would otherwise consume max_tokens.
+        self.extra_body = config.get("server", {}).get("extra_body") or {}
+        # Retries for transient failures (timeouts, connection errors, 429, 5xx)
+        self.max_retries = int(config.get("server", {}).get("max_retries", 3))
+        self.retry_backoff_s = float(config.get("server", {}).get("retry_backoff_s", 10))
+        self.max_consecutive_errors = int(config.get("server", {}).get("max_consecutive_errors", 20))
+        self._consecutive_errors = 0
+        self._error_lock = threading.Lock()
         self.headers = {"Content-Type": "application/json"}
         api_key = (config.get("server", {}).get("api_key") or "").strip()
         if not api_key:
@@ -38,6 +54,7 @@ class MedicalLLMClient:
                 base_url=self.base_url,
                 api_key=self.api_key or "EMPTY",
                 http_client=httpx.Client(verify=self.verify_ssl, timeout=self.timeout_s),
+                max_retries=0,  # retries are handled in _send
             )
 
     @staticmethod
@@ -92,10 +109,19 @@ class MedicalLLMClient:
             }
             if self.max_tokens is not None:
                 kwargs["max_tokens"] = self.max_tokens
+            if self.extra_body:
+                kwargs["extra_body"] = self.extra_body
             response = self._openai_client.chat.completions.create(**kwargs)
-            return response.choices[0].message.content
+            choice = response.choices[0]
+            return self._content_or_error(choice.message.content, choice.finish_reason)
         except Exception as e:
             return f"Error: {str(e)}"
+
+    @staticmethod
+    def _content_or_error(content, finish_reason) -> str:
+        if content is None or not str(content).strip():
+            return f"Error: empty response (finish_reason={finish_reason})"
+        return content
 
     def _call_requests(self, messages):
         """Call via raw requests and return content string or Error: string."""
@@ -106,6 +132,7 @@ class MedicalLLMClient:
         }
         if self.max_tokens is not None:
             payload["max_tokens"] = self.max_tokens
+        payload.update(self.extra_body)
         try:
             response = requests.post(
                 self.url,
@@ -115,7 +142,8 @@ class MedicalLLMClient:
                 verify=self.verify_ssl,
             )
             response.raise_for_status()
-            return response.json()["choices"][0]["message"]["content"]
+            choice = response.json()["choices"][0]
+            return self._content_or_error(choice["message"].get("content"), choice.get("finish_reason"))
         except requests.HTTPError as e:
             resp = getattr(e, "response", None)
             status = resp.status_code if resp is not None else "?"
@@ -131,12 +159,42 @@ class MedicalLLMClient:
         except Exception as e:
             return f"Error: {str(e)}"
 
-    def ask_question(self, prompt: str) -> str:
+    @staticmethod
+    def _is_transient(answer: str) -> bool:
+        """Errors worth retrying: not empty answers and not client errors (400/401/403/404/422)."""
+        if not answer.startswith("Error:") or answer.startswith("Error: empty response"):
+            return False
+        return not re.search(r"(Error code:|HTTP)\s*(400|401|403|404|422)\b", answer)
+
+    def _send(self, messages) -> str:
+        call = self._call_openai if self._openai_client is not None else self._call_requests
+        for attempt in range(self.max_retries + 1):
+            answer = call(messages)
+            if not self._is_transient(answer) or attempt == self.max_retries:
+                break
+            time.sleep(self.retry_backoff_s * 2 ** attempt)
+
+        with self._error_lock:
+            if self._is_transient(answer):
+                self._consecutive_errors += 1
+                if self._consecutive_errors >= self.max_consecutive_errors:
+                    raise ServerUnavailableError(
+                        f"{self._consecutive_errors} consecutive request failures, last: {answer[:300]}"
+                    )
+            elif not answer.startswith("Error:"):
+                self._consecutive_errors = 0
+        return answer
+
+    def ask_question(self, prompt: str, system_prompt: str = None) -> str:
         """Send a text-only prompt and return the model's answer."""
-        messages = self._build_messages(prompt)
-        if self._openai_client is not None:
-            return self._call_openai(messages)
-        return self._call_requests(messages)
+        if system_prompt is not None:
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
+            ]
+        else:
+            messages = self._build_messages(prompt)
+        return self._send(messages)
 
     def ask_with_image(self, prompt: str, image_b64: str, image_format: str = "jpeg") -> str:
         """
@@ -151,18 +209,18 @@ class MedicalLLMClient:
         Returns the model's answer or "Error: ..." on failure.
         Requires the target model to be a vision-capable LLM.
         """
+        return self.ask_with_images(prompt, [image_b64], image_format)
+
+    def ask_with_images(self, prompt: str, images_b64: list, image_format: str = "jpeg") -> str:
+        """Like ask_with_image, but sends all images (in order) before the text prompt."""
         media_type = f"image/{'jpeg' if image_format.lower() in ('jpg', 'jpeg') else image_format.lower()}"
         user_content = [
-            {
-                "type": "image_url",
-                "image_url": {"url": f"data:{media_type};base64,{image_b64}"},
-            },
-            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": f"data:{media_type};base64,{b64}"}}
+            for b64 in images_b64
         ]
+        user_content.append({"type": "text", "text": prompt})
         messages = [
             {"role": "system", "content": "You are a medical expert in diagnostic imaging. Answer concisely and in English."},
             {"role": "user", "content": user_content},
         ]
-        if self._openai_client is not None:
-            return self._call_openai(messages)
-        return self._call_requests(messages)
+        return self._send(messages)

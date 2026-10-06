@@ -124,14 +124,14 @@ def run(config: dict, client, data: list, results_path: str, logger=None) -> str
             else:
                 prompt = _build_open_prompt(item)
 
-            # Encode image if present
-            image_b64 = _pil_to_b64(item.get("image"), fmt=item.get("image_format", "jpeg"))
+            fmt = item.get("image_format", "jpeg")
+            images = item.get("meta", {}).get("all_images") or (
+                [item["image"]] if item.get("image") is not None else []
+            )
+            images_b64 = [b for b in (_pil_to_b64(img, fmt=fmt) for img in images) if b]
 
-
-            if image_b64:
-                model_answer = client.ask_with_image(
-                    prompt, image_b64, item.get("image_format", "jpeg")
-                )
+            if images_b64:
+                model_answer = client.ask_with_images(prompt, images_b64, fmt)
             else:
                 model_answer = client.ask_question(prompt)
 

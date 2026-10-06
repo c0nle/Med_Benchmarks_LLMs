@@ -9,3 +9,5 @@ httpx>=0.24.0
 nltk>=3.7
 Pillow>=9.0
 matplotlib>=3.5.0
+pyarrow>=10.0
+openpyxl>=3.0

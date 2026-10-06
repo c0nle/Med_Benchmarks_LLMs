@@ -16,6 +16,7 @@ Each item follows this schema:
     }
 }
 """
+import string
 from pathlib import Path
 
 from loaders.text_benchmarks import _load_local_parquet, _load_local_file
@@ -48,7 +49,7 @@ def _build_options_list(raw) -> list:
         return [{"key": k, "value": v} for k, v in raw.items()]
     if isinstance(raw, list) and raw:
         if isinstance(raw[0], str):
-            return [{"key": k, "value": v} for k, v in zip("ABCDE", raw)]
+            return [{"key": k, "value": v} for k, v in zip(string.ascii_uppercase, raw)]
         return raw
     return []
 
@@ -151,7 +152,8 @@ def _format_radimagenet_benchmark_item(item: dict, idx: int) -> dict:
         options = []
 
     return {
-        "id": str(meta.get("question_id") or f"radimagenet-{idx}"),
+        # metadata.question_id names the question template (9 values), not the item
+        "id": f"{meta.get('question_id') or 'radimagenet'}-{idx}",
         "benchmark": "RadImageNet-VQA",
         "question": str(item.get("question") or ""),
         "answer": str(item.get("answer") or ""),
@@ -170,7 +172,7 @@ def _format_radimagenet_benchmark_item(item: dict, idx: int) -> dict:
 
 def load_radimagenet_vqa(limit=None):
     """
-    Loads the RadImageNet-VQA benchmark test split (9K items, CT/MRI/X-ray).
+    Loads the RadImageNet-VQA benchmark test split (9K items, CT/MRI).
 
     Uses raidium/RadImageNet-VQA, config=benchmark, split=test:
       - 2000 multiple_choice (MCQ, A/B/C/D) → Accuracy
@@ -186,7 +188,7 @@ def load_radimagenet_vqa(limit=None):
 
     Note: Requires a vision-capable LLM (VLM).
     """
-    print("--- Lade RadImageNet-VQA (CT/MRT/Röntgen Benchmark) ---")
+    print("--- Lade RadImageNet-VQA (CT/MRT Benchmark) ---")
 
     if not _RADIMAGENET_BENCHMARK_PATH.exists():
         raise FileNotFoundError(
@@ -285,6 +287,13 @@ def _format_radbench_item(item: dict, idx: int) -> dict:
             q_type = "yes_no"
 
     answer = str(item.get("ANSWER") or item.get("answer") or item.get("gt") or "").strip()
+    # Some closed questions store the answer as a ranked list ("C2,C3,C1,...");
+    # the first entry is the correct option.
+    if q_type in ("mcq", "yes_no") and "," in answer:
+        option_values = {o["value"].strip().lower() for o in options}
+        first = answer.split(",")[0].strip()
+        if answer.lower() not in option_values and first.lower() in option_values:
+            answer = first
 
     # Use embedded image if present (parquet), otherwise load from local image cache
     image = item.get("image") or item.get("img") or None
@@ -297,8 +306,10 @@ def _format_radbench_item(item: dict, idx: int) -> dict:
     # Primary image for single-image tasks; all images passed in meta for multi-image
     primary_image = images[0] if images else None
 
+    # CASE_ID is shared by all questions of a case; append the CSV row number.
+    case_id = str(item.get("CASE_ID") or item.get("id") or item.get("qid") or "radbench")
     return {
-        "id": str(item.get("CASE_ID") or item.get("id") or item.get("qid") or f"radbench-{idx}"),
+        "id": f"{case_id}-q{item.get('_row', idx)}",
         "benchmark": "RadBench",
         "question": str(item.get("QUESTION") or item.get("question") or ""),
         "answer": answer,
@@ -346,6 +357,8 @@ def load_radbench(limit=None):
         )
 
     items = _load_local_file(str(_RADBENCH_PATH))
+    for row_no, it in enumerate(items):
+        it["_row"] = row_no
 
     # Filter out MedPix cases that have no local image (MedPix API is no longer available)
     before = len(items)

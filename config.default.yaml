@@ -8,11 +8,22 @@ server:
   verify_ssl: false
   api_key_env: "LLM_SERVER_API_KEY"
   api_key: ""
-  timeout_s: 60
+  # 2048-token JSON answers (label extraction) take ~90 s at ~22 tok/s
+  timeout_s: 300
+  # Retries for transient errors (timeout, connection, 429, 5xx) with backoff
+  # retry_backoff_s * 2^attempt; the benchmark stops after max_consecutive_errors
+  # failures in a row (resume with: python main.py --run-dir results/run_<ts>)
+  max_retries: 3
+  retry_backoff_s: 10
+  max_consecutive_errors: 20
+  # Optional extra request fields, e.g. to disable thinking of reasoning models:
+  # extra_body:
+  #   chat_template_kwargs:
+  #     enable_thinking: false
 
 # Separate model used as LLM-as-a-Judge for open-ended benchmarks.
-# Uses the OpenAI API directly with the latest GPT model.
-# Set your OpenAI key: export OPENAI_API_KEY=sk-...
+# Any OpenAI-compatible endpoint; here the same LLM server as above.
+# Key: api_key below or the environment variable named in api_key_env.
 judge:
   url: "https://your-llm-server:4000/v1"
   client: "openai_sdk"
@@ -21,6 +32,11 @@ judge:
   api_key_env: "LLM_SERVER_API_KEY"
   api_key: ""
   timeout_s: 120
+  # Optional extra request fields. For reasoning models (e.g. Qwen3.5) disable
+  # thinking, otherwise it consumes max_tokens and the answer is empty:
+  # extra_body:
+  #   chat_template_kwargs:
+  #     enable_thinking: false
 
 # Which benchmark(s) to run.
 #
@@ -42,7 +58,7 @@ judge:
 #                     Paper: https://harrison-ai.github.io/radbench/
 #   vqa_med_2019    – VQA-Med-2019 image VQA (VLM needed); metric: WBSS + LLM-Judge
 #                     Paper: Ben Abacha et al. 2019, ImageCLEF
-#   radimagenet_vqa – RadImageNet-VQA CT/MRI/X-ray (VLM needed)
+#   radimagenet_vqa – RadImageNet-VQA CT/MRI (VLM needed)
 #                     Metrics: MCQ Accuracy, Yes/No Accuracy, LLM-Judge (open)
 #                     Paper: Butsanets et al. 2025 (https://arxiv.org/abs/2512.17396)
 #                     HF:    raidium/RadImageNet-VQA
@@ -52,13 +68,36 @@ judge:
 #                     Paper: Tayebi Arasteh et al. 2024 (https://arxiv.org/abs/2407.15621)
 #                     GitHub: https://github.com/tayebiarasteh/RadioRAG
 #                     Note: dataset NOT on HuggingFace — local file required
-benchmark: [medqa,rar,radbench, vqa_med_2019, radimagenet_vqa ,radiorag]
+#   label_extraction_mamma – Strukturierte Label-Extraktion aus deutschen Mamma-MRT-Befunden
+#                     Metriken: Accuracy + Macro-F1 (Menopause, BIRADS, ACR),
+#                               Laesionen: Typ-Micro-F1 + Exact Match pro Seite (Hauptmetrik),
+#                               zusaetzlich Anzahl-basiert (Multiset)
+#                     Daten: data/label_extraction/ (nicht oeffentlich — lokal erforderlich)
+#   label_extraction_arm – Binaere Label-Extraktion (mit Zitat) aus deutschen Arm-Roentgenbefunden
+#                     Metriken: F1 pro Label, Macro-/Micro-F1, Sensitivitaet/Spezifizitaet,
+#                               Citation-Match, 95%-Bootstrap-CIs
+#                     Daten: data/label_extraction/Label_Extraction_Kilian/
+#                     Paper: Kreutzer et al. Eur Radiol 2025
+#                            https://doi.org/10.1007/s00330-025-12102-1
+benchmark: [medqa, rar, radbench, vqa_med_2019, radimagenet_vqa, radiorag, label_extraction_mamma, label_extraction_arm]
 
 benchmark_settings:
-  limit_samples: 5000 # Whole dataset: null (not recommended as radimagenet_vqa hat 750.000 samples :))
+  limit_samples: null # null = whole dataset (largest: radimagenet_vqa with 9000 items); e.g. 5 for a quick test
   temperature: 0.0
   max_tokens: 256
   # optional: sleep between requests to avoid rate limits
   sleep_s: 0
   # optional: abort if too many errors
   max_errors: 200
+
+# Per-Task-Overrides (z.B. max_tokens fuer JSON-intensive Tasks)
+task_settings:
+  label_extraction_mamma:
+    max_tokens: 2048
+    acr_range: min             # "min" | "max" | "error"
+    birads6_handling: map_to_5 # "map_to_5" | "keep"
+    gt_empty_ext_present: ignore  # "ignore" | "fp" (GT leer, Modell liefert Wert; gilt auch fuer Laesions-Seiten)
+  label_extraction_arm:
+    max_tokens: 2048
+    regions: all               # "clavicle" | "elbow" | "thumb" | "all"
+    phase: test                # "train" | "val" | "test"

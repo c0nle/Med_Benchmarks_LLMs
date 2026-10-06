@@ -19,7 +19,17 @@ _BAR_SPEC = [
     ("radimagenet_vqa", "yes_no_accuracy_pct",      "RadImageNet\nYes/No Acc.",       "RadImageNet-VQA"),
     ("radimagenet_vqa", "open_wbss_pct",            "RadImageNet\nOpen WBSS",         "RadImageNet-VQA"),
     ("radimagenet_vqa", "open_judge_accuracy_pct",  "RadImageNet\nOpen Judge",        "RadImageNet-VQA"),
-    ("label_extraction","micro_f1_pct",             "Label Extraction\n(Micro F1)",   "NER"),
+    ("label_extraction",       "micro_f1_pct",              "Label Extraction\n(Micro F1)",    "NER"),
+    ("label_extraction_mamma", "menopause_accuracy_pct",    "Mamma\nMenopause Acc.",           "Mamma-MRT"),
+    ("label_extraction_mamma", "birads_li_accuracy_pct",    "Mamma\nBIRADS li Acc.",           "Mamma-MRT"),
+    ("label_extraction_mamma", "birads_re_accuracy_pct",    "Mamma\nBIRADS re Acc.",           "Mamma-MRT"),
+    ("label_extraction_mamma", "acr_li_accuracy_pct",       "Mamma\nACR li Acc.",              "Mamma-MRT"),
+    ("label_extraction_mamma", "acr_re_accuracy_pct",       "Mamma\nACR re Acc.",              "Mamma-MRT"),
+    ("label_extraction_mamma", "lesions_li_micro_f1_pct",   "Mamma\nLäsionen li F1",          "Mamma-MRT"),
+    ("label_extraction_mamma", "lesions_re_micro_f1_pct",   "Mamma\nLäsionen re F1",          "Mamma-MRT"),
+    ("label_extraction_arm",   "micro_f1_pct",              "Arm\nMicro-F1",                   "Arm-XRay"),
+    ("label_extraction_arm",   "macro_f1_pct",              "Arm\nMacro-F1",                   "Arm-XRay"),
+    ("label_extraction_arm",   "citation_match_pct",        "Arm\nCitation Match",             "Arm-XRay"),
 ]
 
 # Color per dataset group
@@ -29,6 +39,8 @@ _COLORS = {
     "VQA-Med-2019":    "#C44E52",   # red
     "RadImageNet-VQA": "#8172B2",   # purple
     "NER":             "#CCB974",   # yellow
+    "Mamma-MRT":       "#E07B54",   # orange
+    "Arm-XRay":        "#5BA8A0",   # teal
 }
 
 # Top-level section each dataset belongs to (for background shading)
@@ -37,13 +49,15 @@ _SECTION = {
     "RadBench":        "VLM",
     "VQA-Med-2019":    "VLM",
     "RadImageNet-VQA": "VLM",
-    "NER":             "NER",
+    "NER":             "Extraction",
+    "Mamma-MRT":       "Extraction",
+    "Arm-XRay":        "Extraction",
 }
 
 _SECTION_BG = {
-    "Text MCQ": "#EEF2FF",
-    "VLM":      "#F0FFF4",
-    "NER":      "#FFF8EE",
+    "Text MCQ":  "#EEF2FF",
+    "VLM":       "#F0FFF4",
+    "Extraction": "#FFF8EE",
 }
 
 # Hardcoded random baselines per metric (None = no line drawn)
@@ -54,6 +68,12 @@ _BASELINES = {
     "open_wbss_pct":           None,
     "open_judge_accuracy_pct": None,
     "micro_f1_pct":            None,
+}
+
+# Per-benchmark overrides where the option count differs from 4
+_BASELINE_OVERRIDES = {
+    ("rar", "accuracy_pct"):          20.0,   # 5 options
+    ("radbench", "mcq_accuracy_pct"): None,   # 2–12 options per question
 }
 
 
@@ -94,7 +114,7 @@ def generate_results_chart(summary: list, model_name: str, out_path: str) -> Non
                 "metric_key": metric_key,
                 "color":      _COLORS[group],
                 "section":    _SECTION[group],
-                "baseline":   _BASELINES.get(metric_key),
+                "baseline":   _BASELINE_OVERRIDES.get((bench, metric_key), _BASELINES.get(metric_key)),
             })
 
     if not bars:
@@ -168,7 +188,7 @@ def generate_results_chart(summary: list, model_name: str, out_path: str) -> Non
         ax.text(mid, 104, sec,
                 ha="center", va="bottom",
                 fontsize=10, fontweight="bold",
-                color={"Text MCQ": "#4C72B0", "VLM": "#2a7a4a", "NER": "#9a7a10"}[sec])
+                color={"Text MCQ": "#4C72B0", "VLM": "#2a7a4a", "Extraction": "#9a7a10"}.get(sec, "#555555"))
 
     # --- Dataset labels inside shaded areas (below section label) ---
     group_spans = {}
@@ -217,7 +237,7 @@ def generate_results_chart(summary: list, model_name: str, out_path: str) -> Non
     ]
     if baseline_drawn:
         handles.append(plt.Line2D([0], [0], color="red", linewidth=1.4,
-                                  linestyle="--", label="Random baseline\n(25% MCQ / 50% Yes-No)"))
+                                  linestyle="--", label="Random baseline\n(1/#options; 50% Yes-No)"))
     ax.legend(handles=handles, loc="upper right", fontsize=8,
               framealpha=0.92, edgecolor="#cccccc", title="Dataset", title_fontsize=8)
 

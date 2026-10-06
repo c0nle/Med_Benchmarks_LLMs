@@ -1,0 +1,239 @@
+# Normalisierungs-Mapping für Mamma-MRT Label Extraction
+# Format: kanonische Form → Liste von Eingabe-Varianten (Groß-/Kleinschreibung-ignorierend)
+# Editierbar ohne Code-Änderung.
+
+# ─── Menopause ───────────────────────────────────────────────────────────────
+menopause:
+  prä:
+    - prä
+    - prae
+    - pre
+    - prämenopausal
+    - prämenopause
+    - premenopausal
+    - pre-menopausal
+    - vormenopause
+    - prämenopausal
+  post:
+    - post
+    - postmenopausal
+    - postmenopause
+    - post-menopausal
+  peri:
+    - peri
+    - perimenopausal
+    - perimenopause
+    - peri-menopausal
+
+# ─── BIRADS (kanonisch = ganzzahliger String) ─────────────────────────────────
+# Nummerische Textvarianten wie "2 Sicher benigne" werden automatisch erkannt.
+birads:
+  "1":
+    - "1"
+    - "1 negativ"
+    - "1 negativ/unauffällig"
+    - negativ
+    - unauffällig
+    - normal
+  "2":
+    - "2"
+    - "2 sicher benigne"
+    - sicher benigne
+    - benigne
+  "3":
+    - "3"
+    - "3 wahrscheinlich benigne"
+    - wahrscheinlich benigne
+    - verlaufskontrolle
+    - "wahrscheinlich benigne/verlaufskontrolle empfohlen"
+  "4":
+    - "4"
+    - "4 suspekt"
+    - suspekt
+    - "4a"
+    - "4b"
+    - "4c"
+    - "histologische abklärung empfohlen"
+    - "suspekt/histologische abklärung empfohlen"
+  "5":
+    - "5"
+    - "5 hochgradig"
+    - hochgradig maligne
+    - hochgradig suggestiv
+    - "hochgradig suggestiv für malignität"
+    - malignitätsverdacht
+  "6":
+    - "6"
+    - "6 nachgewiesene malignität"
+    - nachgewiesene malignität
+    - gesicherte malignität
+    - nachgewiesen maligne
+
+# ─── ACR / BPE (Hintergrundanreicherung, kanonisch = "1"–"4") ────────────────
+# NICHT Brustdichte (die alten GPT-Extraktionen hatten Dichte – das ist falsch).
+# Bereiche wie "1 bis 2" werden per Config-Option (acr_range) behandelt.
+acr:
+  "1":
+    - "1"
+    - minimal
+    - "1 minimal"
+    - "1 minimal (acr-i)"
+    - "acr i"
+    - "acr 1"
+    - "acr-1"
+  "2":
+    - "2"
+    - mild
+    - "2 mild"
+    - "2 mild (acr ii)"
+    - "acr ii"
+    - "acr 2"
+    - "acr-2"
+  "3":
+    - "3"
+    - moderat
+    - "3 moderat"
+    - "3 moderat (acr iii)"
+    - "acr iii"
+    - "acr 3"
+    - "acr-3"
+  "4":
+    - "4"
+    - ausgeprägt
+    - "4 ausgeprägt"
+    - "4 ausgeprägt (acr iv)"
+    - "acr iv"
+    - "acr 4"
+    - "acr-4"
+
+# ─── Läsionstypen ─────────────────────────────────────────────────────────────
+# Kanonisch: lowercase. Varianten: alle bekannten Schreibweisen (Groß-/Kleinschreibung
+# und Leerzeichen am Ende werden automatisch normalisiert).
+#
+# Mischbefunde (z.B. "ca/dcis") zaehlen als EINE Laesion mit der hoehergradigen
+# Komponente (invasiv > DCIS > benigne), da die GT eine Zeile pro Laesion hat.
+lesion_types:
+  "invasives karzinom":
+    - invasives karzinom
+    - ca/dcis
+    - dcis/ca
+    - dcis/ca anteile
+    - dcis/ca-herde
+    - adenose/dcis/ca
+    - invasives ca
+    - invasives ca.
+    - invasives carcinom
+    - invasiv karzinom
+    - karzinom
+    - karzinom (invasiv)
+    - ca
+    - ca.
+    - carcinom
+    - carcinoma
+    - invasive carcinoma
+    - invasives mammakarzinom
+    - mammakarzinom
+    - brustkrebs
+  "dcis":
+    - dcis
+    - ductales carcinoma in situ
+    - duktales karzinom in situ
+    - duktales carcinoma in situ
+    - carcinoma in situ
+    - cis
+    - intraduktales karzinom
+    - dcis/clis
+    - adenose/dcis
+    - dcis/adenose
+  "fibroadenom":
+    - fibroadenom
+    - fibroadenoma
+    - fibroadenom (sklerosiert)
+    - sklerosiertes fibroadenom
+    - fibroadenomatöse veränderung
+  "mastopathie":
+    - mastopathie
+    - mastopathy
+    - mastopathische veränderung
+    - mastopathische veränderungen
+    - fibrozystische mastopathie
+  "adenose":
+    - adenose
+    - adenosis
+    - sklerosierte adenose
+  "lymphknoten":
+    - lymphknoten
+    - lymph node
+    - lk
+    - lk axillär
+    - axillärer lymphknoten
+    - vergrößerter lymphknoten
+    - lymphknotenmetastase
+    - "lymphknoten ??"
+  "papillom":
+    - papillom
+    - papilloma
+    - intraduktales papillom
+    - intrazystisches papillom
+    - papillome/proliferate
+  "unspezifische anreicherung":
+    - unspezifisch
+    - unspezifische anreicherung
+    - unspezifisches enhancement
+  "hormonelle stimulation":
+    - hormonelle stimulation
+    - hormonell
+    - "adenose, hormonelle stimulation"
+  "mamille":
+    - mamille
+    - mamillenanreicherung
+    - mamillär
+  "zyste":
+    - zyste
+    - cyst
+    - zysten
+    - einfache zyste
+    - komplizierte zyste
+  "hamartom":
+    - hamartom
+    - hamartoma
+    - fibroadenoliom
+  "lipom":
+    - lipom
+    - lipoma
+  "hämatom":
+    - hämatom
+    - hematom
+    - hematoma
+    - serom
+    - hämatoserom
+  "ödem":
+    - ödem
+    - oedem
+    - edema
+    - hautödem
+  "narbe":
+    - narbe
+    - narbengewebe
+    - scar
+    - narbige veränderung
+    - postoperative narbe
+  "atherom":
+    - atherom
+    - atheroma
+    - atherom (cutane läsion)
+    - epidermale zyste
+  "sonstige läsion":
+    - sonstige läsion
+    - sonstige
+    - sonstiges
+    - other
+    - weitere läsion
+    - entzündlich
+    - "galaktophoritis, entzündlich"
+    - galaktophoritis
+    - dichte drüse
+    - postradiogene cutisverdickung
+    - clip
+    - fettgewebsnekrose
+    - fettgewebsnekreose
