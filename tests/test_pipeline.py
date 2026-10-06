@@ -494,3 +494,17 @@ def test_compare_models(tmp_path):
     assert mc["p_value"] == pytest.approx(cm.mcnemar_exact(10, 0), abs=1e-6) and mc["p_value"] < 0.01
     assert (out / "comparison.png").exists()
     assert cm.mcnemar_exact(0, 0) == 1.0 and cm.mcnemar_exact(5, 5) == 1.0
+
+
+def test_flat_key_ignores_judge_model_and_variant():
+    from core.summary import flatten_report_rows
+    rows = [
+        {"type": "metric", "subset": "open", "metric": "llm_judge_accuracy_pct", "value": 50.0,
+         "ci_lo": 40.0, "ci_hi": 60.0, "judge_model": "org/Some-Judge"},
+        {"type": "metric", "field": "birads_li", "metric": "accuracy_birads6keep_pct",
+         "value": 34.4, "variant": "birads6_keep"},
+    ]
+    flat = flatten_report_rows(rows)
+    assert flat["open_judge_accuracy_pct"] == 50.0
+    assert flat["open_judge_accuracy_pct_ci_lo"] == 40.0
+    assert flat["birads_li_accuracy_birads6keep_pct"] == 34.4

@@ -27,7 +27,9 @@ import re
 
 STATUS_KEYS = ("n_items", "n_expected", "n_api_errors", "complete")
 
-_NON_QUALIFIERS = {"type", "metric", "note", "ci_method", "unit", "description"}
+# judge_model: informational; variant: the tag is already part of the metric name
+_NON_QUALIFIERS = {"type", "metric", "note", "ci_method", "unit", "description",
+                   "judge_model", "variant"}
 _QUALIFIER_ORDER = ("subset", "field", "region", "lesion_view")
 _METRIC_ALIASES = {"llm_judge_accuracy_pct": "judge_accuracy_pct"}
 _N_FIELDS = ("n", "n_judged", "n_sides", "n_scored")
