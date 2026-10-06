@@ -8,7 +8,7 @@ Output-Schema des Modells:
 {
   "menopause": "prä" | "post" | "peri" | null,
   "links": {
-    "birads": 2–6 | null,
+    "birads": 2–5 | null,
     "acr":    1–4 | null,
     "lesionen": ["Typ1", "Typ2", ...]
   },
@@ -64,20 +64,22 @@ def _build_prompt(text: str) -> str:
         "{\n"
         '  "menopause": "prä" | "post" | "peri" | null,\n'
         '  "links": {\n'
-        '    "birads": 2 | 3 | 4 | 5 | 6 | null,\n'
+        '    "birads": 2 | 3 | 4 | 5 | null,\n'
         '    "acr": 1 | 2 | 3 | 4 | null,\n'
         '    "lesionen": [<Typen aus erlaubtem Vokabular>]\n'
         "  },\n"
         '  "rechts": {\n'
-        '    "birads": 2 | 3 | 4 | 5 | 6 | null,\n'
+        '    "birads": 2 | 3 | 4 | 5 | null,\n'
         '    "acr": 1 | 2 | 3 | 4 | null,\n'
         '    "lesionen": [<Typen aus erlaubtem Vokabular>]\n'
         "  }\n"
         "}\n\n"
         f"Erlaubtes Vokabular für Läsionstypen: {vocab}\n\n"
         "Hinweise:\n"
-        "- BIRADS: 2=sicher benigne, 3=wahrsch. benigne, 4=suspekt, "
-        "5=hochgradig maligne, 6=gesicherte Malignität\n"
+        "- BIRADS: Kategorie nach dem Bildbefund der jeweiligen Seite: 2=sicher benigne, "
+        "3=wahrsch. benigne, 4=suspekt, 5=hochgradig malignitätsverdächtig. Auch bei bereits "
+        "histologisch gesichertem Karzinom die Kategorie nach dem Bildbefund angeben "
+        "(höchstens 5, keine 6)\n"
         "- ACR/BPE (Hintergrundanreicherung): 1=minimal, 2=mild, 3=moderat, 4=ausgeprägt\n"
         "- Läsionen: pro Seite die im Befund beschriebenen Herdbefunde/Anreicherungen "
         "(Läsionen mit eigener Beurteilung) mit ihrem Typ aus dem Vokabular; "

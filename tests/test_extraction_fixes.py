@@ -440,3 +440,18 @@ def test_cli_reads_config(tmp_path, monkeypatch):
     rows = [json.loads(x) for x in open(out, encoding="utf-8")]
     acc = next(x for x in rows if x.get("field") == "birads_li" and x.get("metric") == "accuracy_pct")
     assert acc["value"] == 0.0   # "6" kept as its own class -> wrong
+
+
+def test_mamma_prompt_follows_annotation_convention():
+    # GT never contains BI-RADS 6; proven carcinomas are coded by imaging finding (max 5)
+    from tasks.mamma_extraction import _build_prompt
+    p = _build_prompt("synthetischer Befund")
+    assert "| 6 |" not in p and "6=gesicherte" not in p
+    assert p.count('"birads": 2 | 3 | 4 | 5 | null') == 2
+    assert "höchstens 5" in p
+
+
+def test_arm_prompt_example_entries_are_comma_separated():
+    from tasks.arm_extraction import _build_prompt
+    p = _build_prompt("synthetic report", ["Fracture", "Ossicles"])
+    assert '"Fracture": {"finding": true/false, "citation": "..."},\n  "Ossicles"' in p

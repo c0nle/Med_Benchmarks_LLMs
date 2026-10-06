@@ -203,7 +203,9 @@ python evaluate.py results/<run>/label_extraction_arm_results.csv --type arm_ext
 - Yes/No: "Reply with only 'Yes' or 'No'".
 - Open-ended VQA: "Answer the question with a single word or a short phrase." (before 2026-10 the prompt asked for
   "key medical terms only"; results from older runs are not comparable).
-- Mamma-MRT: German system and user prompt with a JSON schema. Arm X-ray: JSON with one entry per label and a
+- Mamma-MRT: German system and user prompt with a JSON schema. BI-RADS is asked as 2–5 by imaging finding, also
+  for an already histologically proven carcinoma (the annotation never uses 6; before 2026-10-07 the prompt offered
+  6 = proven malignancy and models used it in staging reports). Arm X-ray: JSON with one entry per label and a
   verbatim citation; the datasets contain no label definitions, so the prompt lists label names only.
 - Default system prompt for public benchmarks: "You are a medical expert in diagnostic imaging. Answer concisely and
   in English."
@@ -265,7 +267,7 @@ Mamma lesions and Arm labels.
   for macro-F1, so macro-F1 can exceed accuracy). "ACR" in the GT is background parenchymal enhancement (1–4), not
   breast density. BPE is usually one value per exam, so the left/right rows are not independent;
   `acr_exam_accuracy_pct` scores one decision per exam (exams whose GT differs between sides are excluded and counted).
-- Primary definition: BI-RADS 6 is mapped to 5 (`birads6_handling`; the GT has no 6) and fields or lesion sides with
+- Primary definition: BI-RADS 6 is mapped to 5 (`birads6_handling`; the GT has no 6 and the prompt asks for 2–5, so this only catches stray answers) and fields or lesion sides with
   empty GT are not scored (`gt_empty_ext_present: ignore`). Sensitivity analyses with the other option of each setting
   are always reported, using the same metric name with a tag before `_pct` (`birads_li_accuracy_birads6keep_pct`,
   `menopause_accuracy_gtemptyfp_pct`, `lesions_li_micro_f1_gtemptyfp_pct`; JSONL rows carry a `variant` field),

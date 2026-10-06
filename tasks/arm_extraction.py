@@ -83,7 +83,7 @@ def check_citations(parsed: dict, report_text: str) -> dict:
 def _build_prompt(text: str, template_labels: list) -> str:
     # Label names only: no authoritative label definitions / annotation guidelines exist
     # in the dataset folder (templates contain names only), so none are invented here.
-    entries = "\n".join(
+    entries = ",\n".join(
         f'  "{label}": {{"finding": true/false, "citation": "..."}}'
         for label in template_labels
     )
