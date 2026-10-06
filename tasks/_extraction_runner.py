@@ -20,6 +20,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
+from core.fileio import atomic_to_csv
 
 try:
     from core.client import ServerUnavailableError
@@ -86,7 +87,7 @@ def _read_completed(results_path: str, fieldnames: list):
         for c in missing_cols:
             existing[c] = ""
         extra = [c for c in existing.columns if c not in fieldnames]
-        existing[fieldnames + extra].to_csv(results_path, index=False)
+        atomic_to_csv(existing[fieldnames + extra], results_path)
     completed = {str(i) for i in existing["id"].tolist() if str(i)}
     return completed, True
 

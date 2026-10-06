@@ -40,7 +40,7 @@ export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 source .venv/bin/activate
 python3 -V
 
-# main.py exits 1 if a benchmark failed or is incomplete, 2 on configuration errors
+# main.py exits 1 if a benchmark failed or is incomplete, 2 on lock or startup configuration errors (health check, fingerprint); a configuration error during a run counts as a stopped benchmark (1)
 rc=0
 if [[ -n "${SLURM_JOB_ID:-}" ]]; then
     srun python3 main.py "$@" || rc=$?

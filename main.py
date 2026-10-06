@@ -160,7 +160,8 @@ def _run_one(benchmark: str, registry: dict, config: dict, client, judge_client,
     finally:
         client.max_tokens = orig_max_tokens
 
-    eval_path, n_done, n_errors, cleanup = _prepare_results_for_eval(results_path, set(ids), run_dir)
+    eval_path, n_done, n_errors, cleanup = _prepare_results_for_eval(
+        results_path, set(ids), run_dir, judge_model=(config.get("judge") or {}).get("model_name"))
     stop_reason = f"{type(stop_exc).__name__}: {str(stop_exc)[:200]}" if stop_exc else None
     status = build_status(n_done, len(data), n_errors, stop_reason)
     write_status(run_dir, benchmark, status)
@@ -171,6 +172,12 @@ def _run_one(benchmark: str, registry: dict, config: dict, client, judge_client,
         print(f"  WARNING: {n_errors} API errors in results (scored as wrong; "
               f"rerun with --run-dir {run_dir} to retry them)")
 
+    # The report is derived from the results CSV: never leave one from an earlier
+    # evaluation next to new results (a failed evaluation would otherwise show
+    # stale numbers under a "complete" status).
+    if os.path.exists(report_path):
+        os.remove(report_path)
+
     returned = {}
     try:
         if n_done > 0:
@@ -179,9 +186,15 @@ def _run_one(benchmark: str, registry: dict, config: dict, client, judge_client,
         else:
             print("  No results to evaluate.")
     except Exception as e:
-        if stop_exc is None:
+        cause = e.__cause__ if isinstance(e.__cause__, ServerUnavailableError) else None
+        reason = stop_reason or f"evaluation failed: {type(cause or e).__name__}: {str(cause or e)[:200]}"
+        status = build_status(n_done, len(data), n_errors, reason)
+        write_status(run_dir, benchmark, status)
+        if stop_exc is None and cause is None:
             raise
-        print(f"  WARNING: evaluation of the partial results failed: {e}")
+        if stop_exc is None:
+            stop_exc = cause            # judge server down: stop like a model outage
+        print(f"  WARNING: evaluation failed: {e}")
     finally:
         cleanup()
 
@@ -223,14 +236,15 @@ def _drop_error_rows(results_path: str) -> None:
         print(f"  Resume: {int(mask.sum())} failed rows removed, will be retried")
 
 
-def _prepare_results_for_eval(results_path: str, current_ids: set, run_dir: str):
+def _prepare_results_for_eval(results_path: str, current_ids: set, run_dir: str,
+                              judge_model: str = None):
     """Deduplicate the results CSV by id (keep the last answer, rewrite atomically)
     and restrict evaluation to the ids of the current data.
 
     If the CSV holds answers for ids outside the current data (e.g. resumed with a
     smaller --limit), those rows stay in the CSV but a filtered copy is written to
     <run_dir>/.eval_subset/<bench>_results.csv and evaluated instead; its judge
-    cache is a symlink to the real <bench>_judge_cache.csv so verdicts are shared.
+    cache is a symlink to the real <bench>_judge_cache_<judge>.csv so verdicts are shared.
 
     Returns (eval_path, n_done, n_api_errors, cleanup_fn); n_* count current ids only.
     """
@@ -260,10 +274,12 @@ def _prepare_results_for_eval(results_path: str, current_ids: set, run_dir: str)
     eval_path = os.path.join(sub_dir, name)
     atomic_to_csv(df[in_scope], eval_path)
     base = name[: -len("_results.csv")] if name.endswith("_results.csv") else name
-    cache_link = os.path.join(sub_dir, f"{base}_judge_cache.csv")
+    from evaluate import _judge_cache_path
+    cache_name = os.path.basename(_judge_cache_path(name, judge_model or "unknown"))
+    cache_link = os.path.join(sub_dir, cache_name)
     if os.path.lexists(cache_link):
         os.unlink(cache_link)
-    os.symlink(os.path.join("..", f"{base}_judge_cache.csv"), cache_link)
+    os.symlink(os.path.join("..", cache_name), cache_link)
 
     def cleanup():
         for p in (eval_path, cache_link):

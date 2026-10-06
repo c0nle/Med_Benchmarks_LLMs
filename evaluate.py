@@ -1208,21 +1208,25 @@ def _load_config() -> dict:
         return yaml.safe_load(_f) or {}
 
 
-def _load_judge_client_from_config(judge_model: Optional[str] = None):
+def _load_judge_client_from_config(judge_model: Optional[str] = None, config_path: Optional[str] = None):
     """
-    Judge client from the config's judge: section (same construction as main.py);
-    *judge_model* overrides judge.model_name, e.g. to run a second judge for an
-    agreement analysis (verdicts go to a separate cache file per judge model).
+    Judge client from the config's judge: section, built exactly like in main.py
+    (judge.temperature / max_tokens / seed / extra_body). *config_path* is the
+    --config file (default config.yaml, else config.default.yaml); *judge_model*
+    overrides judge.model_name, e.g. to run a second judge for an agreement
+    analysis (verdicts go to a separate cache file per judge model).
     """
-    from core.client import MedicalLLMClient
-    cfg = _load_config()
-    judge_cfg = dict(cfg.get("judge") or {})
-    if not judge_cfg:
-        raise SystemExit("No 'judge:' section in config.yaml – cannot run LLM-as-a-Judge.")
+    from main import _build_judge_client
+    cfg = _load_eval_config(config_path)
+    if not cfg.get("judge"):
+        raise SystemExit("No 'judge:' section in the config – cannot run LLM-as-a-Judge.")
     if judge_model:
-        judge_cfg["model_name"] = judge_model
-    return MedicalLLMClient({"server": judge_cfg,
-                             "benchmark_settings": cfg.get("benchmark_settings", {})}), cfg
+        cfg = dict(cfg)
+        cfg["judge"] = dict(cfg["judge"], model_name=judge_model)
+    client = _build_judge_client(cfg)
+    if client is None:
+        raise SystemExit("Could not create the judge client (see warning above).")
+    return client, cfg
 
 
 def main() -> None:
@@ -1271,7 +1275,7 @@ def main() -> None:
         print(f"Wrote: {report['path']}")
 
     elif args.eval_type == "vqa":
-        client, cfg = _load_judge_client_from_config(args.judge_model) if run_judge else (None, None)
+        client, cfg = _load_judge_client_from_config(args.judge_model, args.config) if run_judge else (None, None)
         report = write_vqa_report_jsonl(args.csv, out_path=args.out, client=client,
                                         run_judge=run_judge, config=cfg)
         print_vqa_terminal_report(args.csv, report=report)
@@ -1284,7 +1288,7 @@ def main() -> None:
         print(f"Wrote: {report['path']}")
 
     elif args.eval_type == "open_qa":
-        client, cfg = _load_judge_client_from_config(args.judge_model) if run_judge else (None, None)
+        client, cfg = _load_judge_client_from_config(args.judge_model, args.config) if run_judge else (None, None)
         report = write_open_qa_report_jsonl(args.csv, out_path=args.out, client=client,
                                             run_judge=run_judge, config=cfg)
         print_open_qa_terminal_report(args.csv, report=report)
@@ -1897,7 +1901,7 @@ def write_mamma_extraction_report_jsonl(
                         _w({"type": "confusion", "field": field,
                             "gt": gt_cls, "model": pred_cls, "count": count})
 
-        _w({"type": "metric", "field": "acr_exam", "metric": "acr_exam_accuracy_pct",
+        _w({"type": "metric", "field": "acr_exam", "metric": "accuracy_pct",
             "value": acr_exam["accuracy"], "ci_lo": acr_exam["ci_lo"], "ci_hi": acr_exam["ci_hi"],
             "n_exams": acr_exam["n_exams"],
             "n_exams_gt_li_ne_re": acr_exam["n_gt_differs"],

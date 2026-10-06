@@ -63,6 +63,8 @@ def flat_key(row: dict) -> str:
 def flatten_report_rows(rows) -> dict:
     """Flatten an iterable of report rows (dicts) into {flatkey: value}."""
     flat = {}
+    # metric rows first: they carry the CIs; region_metric rows only fill gaps
+    rows = sorted(rows, key=lambda r: r.get("type") != "metric")
     for row in rows:
         rtype = row.get("type")
         if rtype == "metric" and row.get("metric") is not None:
@@ -136,14 +138,17 @@ def status_path(run_dir: str, benchmark: str) -> str:
 
 
 def build_status(n_items: int, n_expected: int, n_api_errors: int, stop_reason: str = None) -> dict:
-    complete = stop_reason is None and n_items >= n_expected
+    # API errors are scored as wrong answers: a run with errors is not final
+    complete = stop_reason is None and n_items >= n_expected and n_api_errors == 0
+    if not stop_reason and not complete:
+        stop_reason = (f"only {n_items}/{n_expected} items answered" if n_items < n_expected
+                       else f"{n_api_errors} API errors (resume with --run-dir to retry)")
     return {
         "n_items": int(n_items),
         "n_expected": int(n_expected),
         "n_api_errors": int(n_api_errors),
         "complete": bool(complete),
-        "stop_reason": stop_reason if stop_reason else (
-            None if complete else f"only {n_items}/{n_expected} items answered"),
+        "stop_reason": stop_reason,
         "finished_at": datetime.datetime.now().isoformat(timespec="seconds"),
     }
 

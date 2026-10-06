@@ -380,7 +380,7 @@ def test_acr_exam_level_accuracy(tmp_path):
             _mrow(2, gt_acr_li="1", gt_acr_re="2", model_acr_li="1", model_acr_re="2")]
     r, out = _mamma_eval(tmp_path, rows)
     assert r["acr_exam_accuracy_pct"] == 50.0
-    row = next(x for x in out if x["metric"] == "acr_exam_accuracy_pct")
+    row = next(x for x in out if x.get("field") == "acr_exam" and x["metric"] == "accuracy_pct")
     assert row["n_exams"] == 2 and row["n_exams_gt_li_ne_re"] == 1 and row["n_exams_model_li_ne_re"] == 1
     side = next(x for x in out if x["metric"] == "accuracy_pct" and x["field"] == "acr_li")
     assert "exam" in side["note"]

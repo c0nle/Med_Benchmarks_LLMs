@@ -262,15 +262,18 @@ def test_dedupe_and_restrict_to_current_ids(tmp_path):
     pd.DataFrame({"id": ["1", "2", "1", "3", "9"],
                   "model_answer": ["old", "x", "new", "Error: boom", "y"]}).to_csv(path, index=False)
     eval_path, n_done, n_err, cleanup = main_mod._prepare_results_for_eval(
-        str(path), {"1", "2", "3"}, str(tmp_path))
+        str(path), {"1", "2", "3"}, str(tmp_path), judge_model="org/Judge-1")
     df = pd.read_csv(path, dtype=str)
     assert df["id"].tolist() == ["2", "1", "3", "9"]            # dedupe, last answer kept
     assert df.loc[df["id"] == "1", "model_answer"].item() == "new"
     assert (n_done, n_err) == (3, 1)
     assert eval_path != str(path)
     assert pd.read_csv(eval_path, dtype=str)["id"].tolist() == ["2", "1", "3"]
-    link = os.path.join(os.path.dirname(eval_path), "radbench_judge_cache.csv")
-    assert os.path.realpath(link) == os.path.realpath(tmp_path / "radbench_judge_cache.csv")
+    from evaluate import _judge_cache_path
+    cache_name = os.path.basename(_judge_cache_path(str(path), "org/Judge-1"))
+    assert cache_name != "radbench_judge_cache.csv"
+    link = os.path.join(os.path.dirname(eval_path), cache_name)
+    assert os.path.realpath(link) == os.path.realpath(tmp_path / cache_name)
     cleanup()
     assert not os.path.exists(tmp_path / ".eval_subset")
 

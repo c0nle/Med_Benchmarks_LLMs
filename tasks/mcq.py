@@ -20,6 +20,7 @@ import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 import pandas as pd
+from core.fileio import atomic_to_csv
 
 
 META_FIELDS = ["finish_reason", "completion_tokens"]
@@ -63,7 +64,7 @@ def prepare_results_file(results_path: str, fieldnames: list):
         for c in missing:
             existing[c] = ""
         columns += missing
-        existing[columns].to_csv(results_path, index=False)
+        atomic_to_csv(existing[columns], results_path)
         print(f"  Resume: added columns {missing} to {results_path}")
     completed = set(existing["id"].astype(str).tolist())
     if completed:
