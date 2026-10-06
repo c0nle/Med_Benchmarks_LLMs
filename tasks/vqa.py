@@ -93,7 +93,7 @@ def build_prompt(item: dict) -> str:
 
 
 def _images_b64(item: dict) -> list:
-    fmt = item.get("image_format", "jpeg")
+    fmt = item.get("image_format", "png")
     images = item.get("meta", {}).get("all_images") or (
         [item["image"]] if item.get("image") is not None else []
     )
@@ -122,7 +122,7 @@ def run(config: dict, client, data: list, results_path: str, logger=None) -> str
         prompt = build_prompt(item)
         images_b64 = _images_b64(item)
         if images_b64:
-            return client.ask_with_images(prompt, images_b64, item.get("image_format", "jpeg"))
+            return client.ask_with_images(prompt, images_b64, item.get("image_format", "png"))
         return client.ask_question(prompt)
 
     def _base_row(item):

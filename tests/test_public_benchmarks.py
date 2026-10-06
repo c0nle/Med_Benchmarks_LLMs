@@ -456,3 +456,27 @@ def test_radimagenet_category_and_cluster():
         "metadata": {"content_type": "anatomy", "question_id": "anatomy_open", "modality": "ct"}}, 5)
     assert it["id"] == "anatomy_open-5"
     assert it["meta"]["category"] == "anatomy" and it["meta"]["cluster_id"] == "lung1.png"
+
+
+def test_images_are_sent_lossless_as_png():
+    import base64, io
+    from PIL import Image, ImageChops
+    from loaders.vision_benchmarks import _pil_to_b64
+    for mode in ("L", "RGB"):
+        img = Image.new(mode, (17, 9))
+        img.putpixel((3, 4), 200 if mode == "L" else (10, 200, 30))
+        raw = base64.b64decode(_pil_to_b64(img))
+        assert raw[:8] == b"\x89PNG\r\n\x1a\n"
+        back = Image.open(io.BytesIO(raw))
+        assert back.mode == mode and ImageChops.difference(back, img).getbbox() is None
+    rgba = Image.new("RGBA", (4, 4), (1, 2, 3, 255))
+    back = Image.open(io.BytesIO(base64.b64decode(_pil_to_b64(rgba))))
+    assert back.mode == "RGB" and back.getpixel((0, 0)) == (1, 2, 3)
+
+
+def test_radbench_image_markers_are_numbered():
+    from loaders.vision_benchmarks import _number_image_markers
+    q = "Compare the first study <i> <i> to the second study <i>. Has a cast been applied?"
+    assert _number_image_markers(q) == ("Compare the first study [Image 1] [Image 2] to the "
+                                        "second study [Image 3]. Has a cast been applied?")
+    assert _number_image_markers("No markers here?") == "No markers here?"

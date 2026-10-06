@@ -121,8 +121,27 @@ def build_fingerprint(config: dict, benchmarks) -> dict:
         "extra_body": server.get("extra_body") or {},
         "max_tokens": {b: effective_max_tokens(config, b) for b in benchmarks},
         "system_prompt_sha256": _sha256(DEFAULT_SYSTEM_PROMPT)[:16],
+        # prompts, parsing and data loading live in these files: a change between a run
+        # and its resume is reported (soft warning), so mixed prompt versions are noticed
+        "input_code_sha256": _input_code_hash(),
         "judge_model": judge.get("model_name") if judge else None,
     }
+
+
+_INPUT_CODE_GLOBS = ("tasks/*.py", "loaders/*.py", "core/client.py")
+
+
+def _input_code_hash() -> str:
+    """sha256 over the source files that build the model input (prompts, loaders, client)."""
+    import glob
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    h = hashlib.sha256()
+    for pattern in _INPUT_CODE_GLOBS:
+        for path in sorted(glob.glob(os.path.join(root, pattern))):
+            h.update(os.path.relpath(path, root).encode("utf-8"))
+            with open(path, "rb") as f:
+                h.update(f.read())
+    return h.hexdigest()[:16]
 
 
 def check_fingerprint(run_dir: str, config: dict, benchmarks, force: bool = False) -> dict:

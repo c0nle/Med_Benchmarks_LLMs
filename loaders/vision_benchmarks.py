@@ -10,7 +10,7 @@ Each item follows this schema:
     "answers":      list,      # all accepted alternatives (VQA-Med-2019 only; optional)
     "options":      list,      # [{"key": "A", "value": "..."}, ...] — MCQ only
     "image":        PIL.Image or None,
-    "image_format": str,       # "jpeg" | "png"
+    "image_format": str,       # "png" (lossless, default) | "jpeg"
     "meta": {
         "question_type": str,  # "mcq" | "yes_no" | "open"
         "category":      str,  # per-category reporting (VQA-Med question_categories,
@@ -38,17 +38,38 @@ _RADBENCH_PATH               = Path("data/radbench.csv")
 _RADIMAGENET_BENCHMARK_PATH  = Path("data/radimagenet_vqa_benchmark.parquet")
 
 
-def _pil_to_b64(image, fmt: str = "jpeg") -> str:
-    """Convert a PIL Image to a base64 string. Returns '' if image is None."""
+def _pil_to_b64(image, fmt: str = "png") -> str:
+    """Convert a PIL Image to a base64 string. Returns '' if image is None.
+
+    Images are sent as PNG (lossless): greyscale ("L") and RGB keep their pixels exactly;
+    other modes (e.g. the fully opaque RGBA files in RadBench) are converted to RGB.
+    JPEG is only used if explicitly requested (it re-compresses lossily).
+    """
     import io, base64
     if image is None:
         return ""
     try:
         buf = io.BytesIO()
-        image.convert("RGB").save(buf, format=fmt.upper() if fmt.lower() != "jpg" else "JPEG")
+        if fmt.lower() in ("jpg", "jpeg"):
+            image.convert("RGB").save(buf, format="JPEG", quality=95)
+        else:
+            img = image if image.mode in ("L", "RGB") else image.convert("RGB")
+            img.save(buf, format=fmt.upper())
         return base64.b64encode(buf.getvalue()).decode("utf-8")
     except Exception:
         return ""
+
+
+def _number_image_markers(question: str) -> str:
+    """RadBench marks image positions with "<i>" (e.g. "Compare the first study <i> <i> to
+    the second study <i>"). All images are sent in reference order before the text, so each
+    marker is replaced by its number: "[Image 1] [Image 2] … [Image 3]"."""
+    count = [0]
+
+    def _repl(_m):
+        count[0] += 1
+        return f"[Image {count[0]}]"
+    return re.sub(r"<i>", _repl, question)
 
 
 def _build_options_list(raw) -> list:
@@ -108,7 +129,7 @@ def _format_vqa_med_item(item: dict, idx: int) -> dict:
         "answer": answers[0] if answers else "",
         "answers": answers,            # all accepted alternatives (29+3 questions have >1)
         "image": image,
-        "image_format": "jpeg",
+        "image_format": "png",
         "meta": {
             # HF column is "question_categories": modality | plane | organ | abnormality
             "category": str(item.get("question_categories") or item.get("category")
@@ -180,7 +201,7 @@ def _format_radimagenet_benchmark_item(item: dict, idx: int) -> dict:
         "answer": str(item.get("answer") or ""),
         "options": options,
         "image": item.get("image"),
-        "image_format": "jpeg",
+        "image_format": "png",
         "meta": {
             "question_type": q_type,
             # anatomy | pathology | pathology_specific; question_template = one of 9 templates
@@ -370,11 +391,11 @@ def _format_radbench_item(item: dict, idx: int) -> dict:
     return {
         "id": f"{case_id}-q{item.get('_row', idx)}",
         "benchmark": "RadBench",
-        "question": str(item.get("QUESTION") or item.get("question") or ""),
+        "question": _number_image_markers(str(item.get("QUESTION") or item.get("question") or "")),
         "answer": answer,
         "options": options,
         "image": primary_image,
-        "image_format": "jpeg",
+        "image_format": "png",
         "meta": {
             "question_type": q_type,       # "mcq" | "yes_no" | "open"
             "category": str(item.get("Q_TYPE") or "").strip(),  # pathology, anatomy, view, …

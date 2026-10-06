@@ -388,6 +388,10 @@ def _load_config(args):
         config.setdefault("benchmark_settings", {})["limit_samples"] = (
             None if args.limit.lower() in ("all", "none", "null") else int(args.limit)
         )
+    limit = (config.get("benchmark_settings") or {}).get("limit_samples")
+    if limit is not None and int(limit) <= 0:
+        # loaders treat 0 as "no limit" and negative values as slices from the end
+        raise SystemExit(f"limit_samples must be a positive number or 'all', got {limit!r}")
     return config, config_path
 
 

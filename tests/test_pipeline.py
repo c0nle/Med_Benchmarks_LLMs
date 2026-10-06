@@ -511,3 +511,17 @@ def test_flat_key_ignores_judge_model_and_variant():
     assert flat["open_judge_accuracy_pct"] == 50.0
     assert flat["open_judge_accuracy_pct_ci_lo"] == 40.0
     assert flat["birads_li_accuracy_birads6keep_pct"] == 34.4
+
+
+def test_limit_must_be_positive(tmp_path):
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text("server: {url: 'https://x/v1', model_name: m}\nbenchmark: medqa\n")
+    args = main_mod._parse_args(["--config", str(cfg), "--limit", "0"])
+    with pytest.raises(SystemExit):
+        main_mod._load_config(args)
+
+
+def test_fingerprint_tracks_input_code():
+    from core.run_utils import build_fingerprint
+    fp = build_fingerprint({"server": {"model_name": "m"}}, ["medqa"])
+    assert len(fp["input_code_sha256"]) == 16
