@@ -331,13 +331,14 @@ class TestArmJsonParsing:
         assert parsed["Fracture"]["finding"] is True
         assert parsed["Displacement"]["finding"] is False
 
-    def test_missing_label_defaults_to_false(self):
+    def test_missing_label_is_marked_missing(self):
         raw = json.dumps({"Fracture": {"finding": True, "citation": "x"},
                           "Displacement": {"finding": False, "citation": ""}})
         parsed, err = self.parse_response(raw, self._LABELS)
         assert err is False
-        # Fehlende Labels werden als False ergaenzt
-        assert parsed.get("Ossicles", {}).get("finding") is False
+        # Fehlende Labels werden als fehlend (finding=None) markiert, nicht als negativ
+        assert parsed["Ossicles"]["finding"] is None
+        assert parsed["Displacement"]["finding"] is False
 
     def test_too_few_labels_is_parse_error(self):
         raw = json.dumps({"Fracture": {"finding": True, "citation": "x"}})

@@ -21,17 +21,15 @@ Results-CSV-Spalten:
     gt_lesions_li, gt_lesions_re,
     model_raw, model_menopause, model_birads_li, model_birads_re,
     model_acr_li, model_acr_re, model_lesions_li, model_lesions_re,
-    parse_error
+    parse_error, finish_reason, completion_tokens
+
+finish_reason / completion_tokens come from client.last_meta (empty if the client does
+not provide it); finish_reason == "length" means the JSON answer was truncated.
 """
-import csv
 import json
-import os
 import re
-import time
 
-import pandas as pd
-
-from tasks.mcq import _parse_benchmark_settings
+from tasks import _extraction_runner as _runner
 
 _SYSTEM_PROMPT_DE = (
     "Du bist ein medizinischer KI-Assistent, spezialisiert auf die strukturierte "
@@ -52,7 +50,7 @@ _FIELDNAMES = [
     "gt_lesions_li", "gt_lesions_re",
     "model_raw", "model_menopause", "model_birads_li", "model_birads_re",
     "model_acr_li", "model_acr_re", "model_lesions_li", "model_lesions_re",
-    "parse_error",
+    "parse_error", "finish_reason", "completion_tokens",
 ]
 
 
@@ -147,99 +145,50 @@ def _extract_side(parsed: dict, side_key: str):
 # Task Runner
 # ---------------------------------------------------------------------------
 
+def _process_item(client, item: dict):
+    """Runs in a worker thread: ask the model, parse, build the CSV row."""
+    item_id = str(item.get("id"))
+    model_answer, meta = _runner.call_model(client, _build_prompt(item["text"]), _SYSTEM_PROMPT_DE)
+
+    is_error = isinstance(model_answer, str) and model_answer.startswith("Error:")
+    parsed, parse_error = _parse_response(model_answer)
+
+    model_meno = str(parsed.get("menopause") or "").strip() or ""
+    birads_li, acr_li, lesions_li = _extract_side(parsed, "links")
+    birads_re, acr_re, lesions_re = _extract_side(parsed, "rechts")
+
+    gt = item.get("gt", {})
+    row = {
+        "id":             item_id,
+        "benchmark":      item.get("benchmark", "LabelExtractionMamma"),
+        "gt_menopause":   gt.get("menopause") or "",
+        "gt_birads_li":   gt.get("birads_li") or "",
+        "gt_birads_re":   gt.get("birads_re") or "",
+        "gt_acr_li":      gt.get("acr_li") or "",
+        "gt_acr_re":      gt.get("acr_re") or "",
+        "gt_lesions_li":  json.dumps(gt.get("lesions_li") or [], ensure_ascii=False),
+        "gt_lesions_re":  json.dumps(gt.get("lesions_re") or [], ensure_ascii=False),
+        "model_raw":      model_answer or "",
+        "model_menopause": model_meno,
+        "model_birads_li": birads_li or "",
+        "model_birads_re": birads_re or "",
+        "model_acr_li":   acr_li or "",
+        "model_acr_re":   acr_re or "",
+        "model_lesions_li": json.dumps(lesions_li, ensure_ascii=False),
+        "model_lesions_re": json.dumps(lesions_re, ensure_ascii=False),
+        "parse_error":    str(parse_error),
+        **_runner.meta_columns(meta),
+    }
+    status = "ERROR" if is_error else f"parse_err={parse_error}"
+    if meta.get("finish_reason") == "length":
+        status += " (truncated)"
+    return row, is_error, status
+
+
 def run(config: dict, client, data: list, results_path: str, logger=None) -> str:
-    sleep_s, max_errors = _parse_benchmark_settings(config)
-
-    completed_ids: set = set()
-    if os.path.exists(results_path) and os.path.getsize(results_path) > 0:
-        try:
-            existing = pd.read_csv(results_path, usecols=["id"])
-            completed_ids = set(existing["id"].dropna().astype(str).tolist())
-            if completed_ids:
-                print(f"Resume: {len(completed_ids)} Untersuchungen bereits vorhanden.")
-        except Exception:
-            pass
-
-    total     = len(data)
-    remaining = sum(1 for it in data if str(it.get("id")) not in completed_ids)
-    print(f"  {total} Untersuchungen  ({remaining} remaining)...")
-
-    start         = time.time()
-    processed_new = 0
-    errors        = 0
-
-    file_exists = os.path.exists(results_path) and os.path.getsize(results_path) > 0
-    with open(results_path, "a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=_FIELDNAMES)
-        if not file_exists:
-            writer.writeheader()
-
-        for idx, item in enumerate(data, start=1):
-            item_id = str(item.get("id"))
-            if item_id in completed_ids:
-                continue
-
-            prompt       = _build_prompt(item["text"])
-            model_answer = client.ask_question(prompt, system_prompt=_SYSTEM_PROMPT_DE)
-
-            is_error = isinstance(model_answer, str) and model_answer.startswith("Error:")
-            if is_error:
-                errors += 1
-
-            parsed, parse_error = _parse_response(model_answer)
-
-            model_meno          = str(parsed.get("menopause") or "").strip() or ""
-            birads_li, acr_li, lesions_li = _extract_side(parsed, "links")
-            birads_re, acr_re, lesions_re = _extract_side(parsed, "rechts")
-
-            if logger:
-                status = "ERROR" if is_error else f"parse_err={parse_error}"
-                logger.verbose(
-                    f"[{idx:>{len(str(total))}}/{total}] {item_id}  →  {status}"
-                )
-
-            if is_error and max_errors is not None and errors >= max_errors:
-                print(f"Abbruch: max_errors={max_errors} erreicht.")
-                break
-
-            gt = item.get("gt", {})
-            writer.writerow({
-                "id":             item_id,
-                "benchmark":      item.get("benchmark", "LabelExtractionMamma"),
-                "gt_menopause":   gt.get("menopause") or "",
-                "gt_birads_li":   gt.get("birads_li") or "",
-                "gt_birads_re":   gt.get("birads_re") or "",
-                "gt_acr_li":      gt.get("acr_li") or "",
-                "gt_acr_re":      gt.get("acr_re") or "",
-                "gt_lesions_li":  json.dumps(gt.get("lesions_li") or [], ensure_ascii=False),
-                "gt_lesions_re":  json.dumps(gt.get("lesions_re") or [], ensure_ascii=False),
-                "model_raw":      model_answer or "",
-                "model_menopause": model_meno,
-                "model_birads_li": birads_li or "",
-                "model_birads_re": birads_re or "",
-                "model_acr_li":   acr_li or "",
-                "model_acr_re":   acr_re or "",
-                "model_lesions_li": json.dumps(lesions_li, ensure_ascii=False),
-                "model_lesions_re": json.dumps(lesions_re, ensure_ascii=False),
-                "parse_error":    str(parse_error),
-            })
-            f.flush()
-            processed_new += 1
-
-            if sleep_s > 0:
-                time.sleep(sleep_s)
-
-            if processed_new % 50 == 0:
-                elapsed = time.time() - start
-                rate    = processed_new / elapsed if elapsed > 0 else 0.0
-                eta_s   = int((remaining - processed_new) / rate) if rate > 0 else -1
-                eta     = f"{eta_s//60:02d}:{eta_s%60:02d}" if eta_s >= 0 else "?"
-                pct     = int(processed_new / remaining * 100) if remaining > 0 else 100
-                print(
-                    f"  [{processed_new:>{len(str(remaining))}}/{remaining}]"
-                    f" {pct:3d}%  {rate:.1f} q/s  ETA {eta}  errors: {errors}"
-                )
-
-    elapsed_total = time.time() - start
-    print(f"  Done: {processed_new}/{remaining}  errors: {errors}  ({elapsed_total/60:.1f} min)")
-    return results_path
+    """Concurrent + resumable; see tasks/_extraction_runner.py."""
+    return _runner.run_items(
+        config, data, results_path, _FIELDNAMES,
+        lambda item: _process_item(client, item),
+        logger=logger, unit="exams",
+    )
