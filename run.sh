@@ -11,25 +11,42 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=16G
 
-# Usage (arguments are passed to main.py):
+# Usage (submit from the project directory; arguments are passed to main.py):
 #   sbatch run.sh                                   # benchmarks/limit from config.yaml
 #   sbatch run.sh --run-dir results/run_X --limit all --benchmark label_extraction_arm
+#   sbatch run.sh --config configs_local/qwen.yaml --model Qwen/Qwen3-32B
 # Resume an interrupted run by submitting again with the same --run-dir.
+# Two jobs may share a --run-dir only for different benchmarks (per-benchmark lock).
 
 set -euo pipefail
 
 echo "=== Job ${SLURM_JOB_ID:-local} started on $(hostname) at $(date) ==="
 echo "Args: $*"
 
-PROJECT_DIR="/rwthfs/rz/cluster/home/rwth1954/Med_Benchmarks_LLMs"
-
+# sbatch runs a copy of this script from the spool directory, so $0 does not point
+# to the project; SLURM_SUBMIT_DIR is the directory sbatch was called from.
+PROJECT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 cd "${PROJECT_DIR}"
+if [[ ! -f main.py ]]; then
+    echo "ERROR: main.py not found in ${PROJECT_DIR} – submit run.sh from the project directory." >&2
+    exit 2
+fi
+mkdir -p results
+
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 
 source .venv/bin/activate
 python3 -V
-srun python3 main.py "$@"
 
-echo "=== Job finished at $(date) ==="
+# main.py exits 1 if a benchmark failed or is incomplete, 2 on configuration errors
+rc=0
+if [[ -n "${SLURM_JOB_ID:-}" ]]; then
+    srun python3 main.py "$@" || rc=$?
+else
+    python3 main.py "$@" || rc=$?
+fi
+
+echo "=== Job finished at $(date) (exit code ${rc}) ==="
+exit "${rc}"

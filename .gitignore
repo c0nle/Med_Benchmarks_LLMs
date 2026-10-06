@@ -14,9 +14,12 @@ venv/
 
 # Local config (use config.default.yaml as template)
 config.yaml
+# Per-model run configs (python main.py --config configs_local/<model>.yaml)
+configs_local/
 
-# Data and Results
+# Data and Results (/data also covers a symlinked data dir)
 data/
+/data
 results/
 *.csv
 *.jsonl
