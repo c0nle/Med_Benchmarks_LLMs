@@ -151,9 +151,15 @@ def run_items(config: dict, client, data: list, results_path: str, fieldnames: l
             _fill()
             while pending:
                 done, _ = wait(list(pending), return_when=FIRST_COMPLETED)
-                for fut in done:
+                # `done` is unordered: write finished answers before re-raising a
+                # failed future, so no completed answer is lost on abort.
+                failed = None
+                for fut in sorted(done, key=lambda d: d.exception() is not None):
                     item = pending.pop(fut)
-                    answer, meta = fut.result()      # ServerUnavailableError propagates
+                    if fut.exception() is not None:
+                        failed = failed or fut
+                        continue
+                    answer, meta = fut.result()
                     item_id = str(item.get("id"))
                     is_error = isinstance(answer, str) and answer.startswith("Error:")
                     if is_error:
@@ -184,6 +190,8 @@ def run_items(config: dict, client, data: list, results_path: str, fieldnames: l
                         pct = int(processed_new / remaining * 100) if remaining > 0 else 100
                         print(f"  [{processed_new:>{len(str(remaining))}}/{remaining}] {pct:3d}%  "
                               f"{_rate_str(processed_new, elapsed)}  ETA {eta}  errors: {errors}")
+                if failed is not None:
+                    failed.result()                  # ServerUnavailableError propagates
                 _fill()
         except BaseException:
             for fut in pending:

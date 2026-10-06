@@ -289,7 +289,8 @@ def _evaluate(benchmark: str, eval_type: str, results_path: str, report_path: st
         elif eval_type == "vqa":
             from evaluate import write_vqa_report_jsonl, print_vqa_terminal_report
             report = write_vqa_report_jsonl(results_path, out_path=report_path,
-                                            client=judge_client, run_judge=run_judge, logger=logger)
+                                            client=judge_client, run_judge=run_judge, logger=logger,
+                                            config=config)
             print_vqa_terminal_report(results_path, report=report)
             return {k: v for k, v in report.items() if k != "path"}
 
@@ -302,7 +303,8 @@ def _evaluate(benchmark: str, eval_type: str, results_path: str, report_path: st
         elif eval_type == "open_qa":
             from evaluate import write_open_qa_report_jsonl, print_open_qa_terminal_report
             report = write_open_qa_report_jsonl(results_path, out_path=report_path,
-                                                client=judge_client, run_judge=run_judge, logger=logger)
+                                                client=judge_client, run_judge=run_judge, logger=logger,
+                                                config=config)
             print_open_qa_terminal_report(results_path, report=report)
             return {k: v for k, v in report.items() if k != "path"}
 

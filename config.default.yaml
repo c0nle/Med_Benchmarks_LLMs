@@ -34,7 +34,7 @@ server:
 judge:
   url: "https://your-llm-server:4000/v1"
   client: "openai_sdk"
-  model_name: "openai/gpt-oss-120b"
+  model_name: "Enter your judge model name here"
   verify_ssl: false
   api_key_env: "LLM_SERVER_API_KEY"
   api_key: ""
@@ -112,6 +112,8 @@ task_settings:
     acr_range: min             # "min" | "max" | "error"
     birads6_handling: map_to_5 # "map_to_5" | "keep"
     gt_empty_ext_present: ignore  # "ignore" | "fp" (GT leer, Modell liefert Wert; gilt auch fuer Laesions-Seiten)
+  radbench:
+    missing_images: error      # "error" | "skip_question" (images: python scripts/download_radbench_images.py)
   label_extraction_arm:
     max_tokens: 2048
     regions: all               # "clavicle" | "elbow" | "thumb" | "all"
