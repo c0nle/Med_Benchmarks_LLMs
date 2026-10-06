@@ -54,6 +54,10 @@ def _load_local_parquet(path: str) -> list:
             for col, vals in cols.items():
                 v = vals[i]
                 if col in image_cols:
+                    # keep the original file name (HF Image feature: {"bytes", "path"}),
+                    # used as image/cluster id by the vision loaders
+                    if isinstance(v, dict) and v.get("path"):
+                        row["_image_path"] = str(v["path"])
                     v = _maybe_decode_image(v)
                 row[col] = v
             items.append(row)

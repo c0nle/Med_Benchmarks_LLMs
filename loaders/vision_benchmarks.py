@@ -7,17 +7,25 @@ Each item follows this schema:
     "benchmark":    str,
     "question":     str,
     "answer":       str,       # reference / ground-truth answer
+    "answers":      list,      # all accepted alternatives (VQA-Med-2019 only; optional)
     "options":      list,      # [{"key": "A", "value": "..."}, ...] — MCQ only
     "image":        PIL.Image or None,
     "image_format": str,       # "jpeg" | "png"
     "meta": {
         "question_type": str,  # "mcq" | "yes_no" | "open"
+        "category":      str,  # per-category reporting (VQA-Med question_categories,
+                               # RadImageNet content_type, RadBench Q_TYPE)
+        "cluster_id":    str,  # image / case id for the cluster bootstrap CI
         ...
     }
 }
 """
+import hashlib
+import os
+import re
 import string
 from pathlib import Path
+from urllib.parse import urlparse
 
 from loaders.text_benchmarks import _load_local_parquet, _load_local_file
 
@@ -58,6 +66,26 @@ def _build_options_list(raw) -> list:
 # VQA-Med-2019  →  data/vqa_med_2019.parquet
 # ---------------------------------------------------------------------------
 
+def _answer_alternatives(raw) -> list:
+    """
+    All accepted answers of a VQA-Med-2019 row. The HF dataset stores a list
+    (e.g. ['ct w/contrast', 'ct w/contrast iv']); older exports a list-repr string.
+    """
+    if isinstance(raw, (list, tuple)):
+        vals = [str(a).strip() for a in raw]
+    else:
+        text = str(raw if raw is not None else "").strip()
+        if (text.startswith("['") and text.endswith("']")) or (text.startswith('["') and text.endswith('"]')):
+            import ast
+            try:
+                vals = [str(a).strip() for a in ast.literal_eval(text)]
+            except Exception:
+                vals = [text[2:-2]]
+        else:
+            vals = [text]
+    return [v for v in vals if v]
+
+
 def _format_vqa_med_item(item: dict, idx: int) -> dict:
     question = (
         item.get("question")
@@ -65,35 +93,28 @@ def _format_vqa_med_item(item: dict, idx: int) -> dict:
         or item.get("q")
         or ""
     )
-    answer = (
-        item.get("answer")
-        or item.get("Answer")
-        or item.get("a")
-        or item.get("gt")
-        or ""
-    )
-    # HF dataset sometimes returns answer as a list or as a list-repr string
-    # e.g. ['cta - ct angiography'] → 'cta - ct angiography'
-    if isinstance(answer, list):
-        answer = answer[0] if answer else ""
-    else:
-        answer = str(answer).strip()
-        if answer.startswith("['") and answer.endswith("']"):
-            answer = answer[2:-2]
-        elif answer.startswith('["') and answer.endswith('"]'):
-            answer = answer[2:-2]
+    raw_answer = item.get("answer")
+    if raw_answer is None or (isinstance(raw_answer, str) and not raw_answer):
+        raw_answer = item.get("Answer") or item.get("a") or item.get("gt") or ""
+    answers = _answer_alternatives(raw_answer)
 
     image = item.get("image") or item.get("img") or None
+    item_id = str(item.get("id") or item.get("qid") or item.get("image_name") or f"vqamed-{idx}")
 
     return {
-        "id": str(item.get("id") or item.get("qid") or item.get("image_name") or f"vqamed-{idx}"),
+        "id": item_id,
         "benchmark": "VQA-Med-2019",
         "question": str(question),
-        "answer": answer,
+        "answer": answers[0] if answers else "",
+        "answers": answers,            # all accepted alternatives (29+3 questions have >1)
         "image": image,
         "image_format": "jpeg",
         "meta": {
-            "category": item.get("category") or item.get("Category") or "",
+            # HF column is "question_categories": modality | plane | organ | abnormality
+            "category": str(item.get("question_categories") or item.get("category")
+                            or item.get("Category") or ""),
+            # one image per question in the 500-item test set; image file name as cluster id
+            "cluster_id": str(item.get("_image_path") or item_id),
             "source": "VQA-Med-2019",
         },
     }
@@ -162,6 +183,11 @@ def _format_radimagenet_benchmark_item(item: dict, idx: int) -> dict:
         "image_format": "jpeg",
         "meta": {
             "question_type": q_type,
+            # anatomy | pathology | pathology_specific; question_template = one of 9 templates
+            "category": str(meta.get("content_type") or ""),
+            "question_template": str(meta.get("question_id") or ""),
+            # 1000 images with 9 questions each: image file name is the cluster id
+            "cluster_id": str(item.get("_image_path") or ""),
             "modality": str(meta.get("modality") or "").upper(),
             "pathology": str(meta.get("pathology") or ""),
             "location": str(meta.get("location") or ""),
@@ -215,9 +241,9 @@ def load_radimagenet_vqa(limit=None):
 
 def _detect_radbench_qtype(item: dict) -> str:
     """
-    RadBench has two question types stored in the A_TYPE field:
-      - "closed-ended" → MCQ with answer options (377 questions)
-      - "open-ended"   → free-text answer, evaluated with BLEU + LLM-judge (120 questions)
+    RadBench stores the answer type in A_TYPE:
+      - "CLOSED" → MCQ / yes-no with answer options (377 questions)
+      - "OPEN"   → free-text answer, evaluated with exact match, WBSS and LLM-judge (120 questions)
     """
     a_type = str(item.get("A_TYPE") or item.get("a_type") or item.get("type") or "").lower()
     if "open" in a_type:
@@ -229,39 +255,73 @@ def _detect_radbench_qtype(item: dict) -> str:
     return "open"
 
 
-_RADBENCH_IMAGE_DIR = Path("data/radbench_images")
+# Image cache, filled by scripts/download_radbench_images.py. File name = sha1(reference)[:16]
+# + extension, because the last URL segment is not unique (4 Radiopaedia URLs end in
+# "0._jumbo.jpeg"; the old cache data/radbench_images/ kept only one of them).
+_RADBENCH_IMAGE_DIR = Path("data/radbench_images_v2")
+_MEDPIX_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
 
 
-def _load_radbench_images(image_ids_str: str) -> list:
-    """
-    Load PIL images for a RadBench row from the local image cache.
-
-    image_ids_str is a comma-separated list of UUIDs (MedPix) or URLs (Radiopaedia).
-    Returns a list of PIL Images for each ID that has a file in data/radbench_images/.
-    """
-    import io
-    try:
-        from PIL import Image as _PILImage
-    except ImportError:
+def radbench_image_refs(image_ids) -> list:
+    """Split the imageIDs field (comma-separated URLs / MedPix UUIDs) into references."""
+    if image_ids is None:
         return []
+    text = str(image_ids).strip()
+    if text.lower() in ("", "nan", "none"):
+        return []
+    return [r.strip() for r in text.split(",") if r.strip()]
+
+
+def radbench_image_kind(ref: str) -> str:
+    """'url' (downloadable), 'medpix' (UUID; MedPix API no longer available) or 'unresolvable'."""
+    ref = ref.strip()
+    if ref.lower().startswith(("http://", "https://")):
+        return "url"
+    if _MEDPIX_UUID_RE.match(ref):
+        return "medpix"
+    return "unresolvable"     # e.g. bare Radiopaedia image id "52662257" (case 77654)
+
+
+def radbench_image_filename(ref: str) -> str:
+    """Deterministic, collision-free cache file name: sha1(reference)[:16] + original extension."""
+    ref = ref.strip()
+    path = urlparse(ref).path if radbench_image_kind(ref) == "url" else ref
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in (".jpg", ".jpeg", ".png"):
+        ext = ".jpg"
+    return hashlib.sha1(ref.encode("utf-8")).hexdigest()[:16] + ext
+
+
+def radbench_image_path(ref: str) -> Path:
+    return _RADBENCH_IMAGE_DIR / radbench_image_filename(ref)
+
+
+def _load_radbench_images(refs: list) -> list:
+    """
+    Load PIL images for all references of a RadBench row from the local cache, in order.
+    Raises FileNotFoundError if one is missing, so a question is never sent with only
+    some of its images (load_radbench checks and reports missing files beforehand).
+    """
+    from PIL import Image as _PILImage
 
     images = []
-    if not image_ids_str or str(image_ids_str).lower() in ("nan", "none", ""):
-        return images
-
-    for img_id in str(image_ids_str).split(","):
-        img_id = img_id.strip()
-        # Derive the same filename used by download_radbench_images.py
-        fname = img_id.split("/")[-1].split("?")[0]
-        if not fname.lower().endswith((".jpg", ".jpeg", ".png")):
-            fname += ".jpg"
-        path = _RADBENCH_IMAGE_DIR / fname
-        if path.exists():
-            try:
-                images.append(_PILImage.open(path).copy())
-            except Exception:
-                pass
+    for ref in refs:
+        path = radbench_image_path(ref)
+        if not path.exists():
+            raise FileNotFoundError(f"RadBench image missing: {path} (reference {ref!r}); "
+                                    "run: python scripts/download_radbench_images.py")
+        with _PILImage.open(path) as im:
+            images.append(im.copy())
     return images
+
+
+def _radbench_case_id(item: dict) -> str:
+    raw = item.get("CASE_ID")
+    if raw is None or (isinstance(raw, float) and raw != raw):
+        return ""
+    if isinstance(raw, float) and raw.is_integer():
+        return str(int(raw))
+    return str(raw).strip()
 
 
 def _format_radbench_item(item: dict, idx: int) -> dict:
@@ -295,19 +355,18 @@ def _format_radbench_item(item: dict, idx: int) -> dict:
         if answer.lower() not in option_values and first.lower() in option_values:
             answer = first
 
-    # Use embedded image if present (parquet), otherwise load from local image cache
+    # Use embedded image if present (parquet), otherwise load all images of the row
     image = item.get("image") or item.get("img") or None
-    images = []
-    if image is not None:
-        images = [image]
-    else:
-        images = _load_radbench_images(item.get("imageIDs") or "")
+    refs = radbench_image_refs(item.get("imageIDs"))
+    images = [image] if image is not None else _load_radbench_images(refs)
 
     # Primary image for single-image tasks; all images passed in meta for multi-image
     primary_image = images[0] if images else None
 
     # CASE_ID is shared by all questions of a case; append the CSV row number.
+    # (The id keeps the historic float formatting "77654.0-q220" so old results resume.)
     case_id = str(item.get("CASE_ID") or item.get("id") or item.get("qid") or "radbench")
+    cluster = _radbench_case_id(item) or ("medpix:" + ",".join(sorted(refs)) if refs else case_id)
     return {
         "id": f"{case_id}-q{item.get('_row', idx)}",
         "benchmark": "RadBench",
@@ -318,33 +377,54 @@ def _format_radbench_item(item: dict, idx: int) -> dict:
         "image_format": "jpeg",
         "meta": {
             "question_type": q_type,       # "mcq" | "yes_no" | "open"
-            "q_type_category": str(item.get("Q_TYPE") or ""),   # Pathology, Clinical, …
+            "category": str(item.get("Q_TYPE") or "").strip(),  # pathology, anatomy, view, …
+            "q_type_category": str(item.get("Q_TYPE") or ""),
+            "cluster_id": cluster,         # Radiopaedia case (questions of a case share images)
             "modality": str(item.get("modality") or "XR"),
             "organ": str(item.get("IMAGE_ORGAN") or ""),
             "source": str(item.get("imageSource") or "RadBench"),
+            "image_refs": refs,
             "all_images": images,          # full list for multi-image questions
         },
     }
 
 
-def load_radbench(limit=None):
+def _radbench_missing_policy(config) -> str:
+    """task_settings.radbench.missing_images: "error" (default) | "skip_question"."""
+    ts = ((config or {}).get("task_settings") or {}).get("radbench") or {}
+    policy = str(ts.get("missing_images") or "error").strip().lower()
+    if policy not in ("error", "skip_question"):
+        raise ValueError(f"task_settings.radbench.missing_images must be 'error' or 'skip_question', got {policy!r}")
+    return policy
+
+
+def load_radbench(limit=None, config=None):
     """
     Loads the RadBench benchmark (harrison.ai).
 
     RadBench is a **VLM benchmark** using plain X-ray images (XR) from
     MedPix and Radiopaedia cases. It is NOT text-only.
-      - 89 unique cases (40 MedPix, 49 Radiopaedia)
-      - 497 questions: 377 closed-ended MCQ/Yes-No + 120 open-ended
-      - Modality: X-ray (plain film), sometimes multi-image per case
+      - 497 questions in data/radbench.csv: 212 MedPix, 285 Radiopaedia
+      - Modality: X-ray (plain film), often several images per question
+
+    Which questions are run (all counts are printed):
+      1. MedPix questions are dropped unless their images are in the cache – the MedPix
+         API is no longer available (212 questions).
+      2. Questions with an image reference that is neither a URL nor a MedPix id are
+         dropped unless that image was placed in the cache by hand: case 77654 lists the
+         bare Radiopaedia image id "52662257" (2 questions, both "compare first/second study").
+      3. Every other question needs all its images in data/radbench_images_v2/. A missing
+         file raises an error (task_settings.radbench.missing_images: skip_question skips
+         those questions with a warning instead). Questions are never sent with fewer images.
 
     Evaluation:
       - Closed-ended MCQ   → letter-accuracy (rule-based)
-      - Closed-ended Yes/No → exact-match accuracy
-      - Open-ended          → WBSS + LLM-as-a-Judge
+      - Closed-ended Yes/No → first-word accuracy
+      - Open-ended          → exact match, WBSS, LLM-as-a-Judge
 
     Download: https://github.com/harrison-ai/radbench
     Datei ablegen als: data/radbench.csv
-    X-ray Bilder herunterladen: python3 scripts/download_radbench_images.py
+    X-ray Bilder herunterladen: python scripts/download_radbench_images.py
     """
     print("--- Lade RadBench (harrison.ai – VLM Röntgen-Benchmark) ---")
 
@@ -353,34 +433,66 @@ def load_radbench(limit=None):
             f"RadBench nicht gefunden: {_RADBENCH_PATH}\n"
             "Download: git clone https://github.com/harrison-ai/radbench data/radbench_repo\n"
             "Dann: cp data/radbench_repo/data/radbench/radbench.csv data/radbench.csv\n"
-            "Bilder: python3 scripts/download_radbench_images.py"
+            "Bilder: python scripts/download_radbench_images.py"
         )
+    policy = _radbench_missing_policy(config)
 
     items = _load_local_file(str(_RADBENCH_PATH))
     for row_no, it in enumerate(items):
         it["_row"] = row_no
+    n_rows = len(items)
 
-    # Filter out MedPix cases that have no local image (MedPix API is no longer available)
-    before = len(items)
-    items = [it for it in items
-             if str(it.get("imageSource") or "").strip().lower() != "medpix"
-             or any(
-                 (_RADBENCH_IMAGE_DIR / (img_id.strip().split("/")[-1].split("?")[0] + (
-                     "" if img_id.strip().split("/")[-1].split("?")[0].lower().endswith((".jpg",".jpeg",".png")) else ".jpg"
-                 ))).exists()
-                 for img_id in str(it.get("imageIDs") or "").split(",") if img_id.strip()
-             )]
-    n_filtered = before - len(items)
-    if n_filtered:
-        print(f"  {n_filtered} MedPix-Fragen ohne Bild herausgefiltert ({before} → {len(items)})")
+    def _qid(it):
+        return f"{it.get('CASE_ID') or 'radbench'}-q{it['_row']}"
+
+    def _cached(ref):
+        return radbench_image_path(ref).exists()
+
+    # 1. MedPix: images are not obtainable any more (kept only if cached locally)
+    medpix = [it for it in items if str(it.get("imageSource") or "").strip().lower() == "medpix"]
+    medpix_dropped = [it for it in medpix
+                      if not any(_cached(r) for r in radbench_image_refs(it.get("imageIDs")))]
+    dropped_ids = {id(it) for it in medpix_dropped}
+    items = [it for it in items if id(it) not in dropped_ids]
+    if medpix_dropped:
+        print(f"  {len(medpix_dropped)} MedPix-Fragen ohne Bild herausgefiltert "
+              f"(MedPix-API nicht mehr verfügbar)")
+
+    # 2. References that cannot be downloaded (not a URL, not MedPix) and were not supplied by hand
+    unresolvable = [it for it in items
+                    if any(radbench_image_kind(r) == "unresolvable" and not _cached(r)
+                           for r in radbench_image_refs(it.get("imageIDs")))]
+    if unresolvable:
+        refs = sorted({r for it in unresolvable for r in radbench_image_refs(it.get("imageIDs"))
+                       if radbench_image_kind(r) == "unresolvable"})
+        print(f"  WARNING: {len(unresolvable)} questions dropped – image reference is not a URL "
+              f"({', '.join(refs)}): {', '.join(_qid(it) for it in unresolvable)}. "
+              f"Place the image at {_RADBENCH_IMAGE_DIR}/<sha1(ref)[:16]>.jpg to include them.")
+        dropped_ids = {id(it) for it in unresolvable}
+        items = [it for it in items if id(it) not in dropped_ids]
+
+    # 3. All remaining images must be in the cache
+    missing = {}
+    for it in items:
+        miss = [r for r in radbench_image_refs(it.get("imageIDs")) if not _cached(r)]
+        if miss:
+            missing[_qid(it)] = miss
+    if missing:
+        n_files = len({r for refs in missing.values() for r in refs})
+        msg = (f"RadBench: {n_files} image(s) missing in {_RADBENCH_IMAGE_DIR}/ for "
+               f"{len(missing)} question(s), e.g. {next(iter(missing.items()))}. "
+               "Run: python scripts/download_radbench_images.py")
+        if policy == "error":
+            raise FileNotFoundError(msg + "  (or set task_settings.radbench.missing_images: skip_question)")
+        print(f"  WARNING: {msg} – skipping these questions (missing_images: skip_question)")
+        items = [it for it in items if _qid(it) not in missing]
+
+    print(f"  {n_rows} Zeilen → {len(items)} Fragen mit allen Bildern")
 
     if limit:
         items = items[:limit]
 
     formatted = [_format_radbench_item(item, idx) for idx, item in enumerate(items)]
-    n_with_img = sum(1 for it in formatted if it["image"] is not None)
-    if _RADBENCH_IMAGE_DIR.exists():
-        print(f"  {n_with_img}/{len(formatted)} Fragen mit Bild geladen aus {_RADBENCH_IMAGE_DIR}/")
-    else:
-        print(f"  Keine Bilder gefunden. Für Vision-Evaluation: python3 scripts/download_radbench_images.py")
+    n_imgs = sum(len(it["meta"]["all_images"]) for it in formatted)
+    print(f"  {len(formatted)} Fragen, {n_imgs} Bilder geladen aus {_RADBENCH_IMAGE_DIR}/")
     return formatted
