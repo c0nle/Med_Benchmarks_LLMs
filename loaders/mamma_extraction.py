@@ -1,38 +1,38 @@
 """
-Mamma-MRT Label-Extraction Loader.
+Mamma-MRT label-extraction loader.
 
-Lädt label_extraction_gt.xlsx und hiwi_gt_ergaenzung.xlsx,
-joined per 'ID gekürzt' (GT) = 'AnforderungsNr' (Hiwi).
-Alle IDs werden als String geladen (vermeidet Float/Exponentialdarstellung).
+Reads label_extraction_gt.xlsx and hiwi_gt_ergaenzung.xlsx, joined on
+'ID gekürzt' (ground truth) = 'AnforderungsNr' (report file). All ids are read as
+strings (avoids float / exponent formatting).
 
-Rolle der Dateien:
-    label_extraction_gt.xlsx   – Ground Truth (eine Zeile pro Läsion): Menopause, BIRADS
-                                 (Maximum je Seite), MR-ACR (BPE) je Seite, Läsionstypen.
-    hiwi_gt_ergaenzung.xlsx    – liefert den Befundtext ('Befund') je Untersuchung.
-                                 Die Spalten *_GT (Menopause/BIRADS/ACR) sind eine Kopie
-                                 der aus label_extraction_gt.xlsx abgeleiteten Werte:
-                                 geprüft für alle 302 Untersuchungen mit Befundtext –
-                                 0 abweichende und 0 ergänzte Werte. Sie werden nur als
-                                 Konsistenzprüfung verwendet (bei Abweichung gewinnt der
-                                 Hiwi-Wert und der Konflikt steht in meta.conflicts);
-                                 auf die aktuellen Daten haben sie keinen Einfluss.
+Role of the files:
+    label_extraction_gt.xlsx   – ground truth, one row per lesion: menopause, BI-RADS
+                                 (maximum per side), MR-ACR (= BPE) per side, lesion types.
+                                 Exam-level fields (menopause, BPE, risk, history, ...) are
+                                 either all filled or all empty for an exam; empty means
+                                 "not annotated".
+    hiwi_gt_ergaenzung.xlsx    – provides the report text ('Befund') per exam. Its *_GT
+                                 columns (menopause / BI-RADS / ACR) repeat the values derived
+                                 from label_extraction_gt.xlsx (identical for all 302 exams)
+                                 and are only used as a consistency check: a differing value
+                                 would win and be recorded in meta.conflicts.
 
-Gibt eine Liste von Items zurück: ein Item pro Untersuchung mit Befundtext (302 bei vollem Datensatz).
+Returns one item per exam that has a report text (302 for the full data set).
 
-Item-Schema:
-    id            : AnforderungsNr als str
+Item schema:
+    id            : AnforderungsNr as str
     benchmark     : "LabelExtractionMamma"
-    text          : Befundtext (str)  – NICHT in Logs ausgeben
+    text          : report text (str) – never write it to logs
     gt            : dict
         menopause : "prä" | "post" | None
-        birads_li : "2"–"5" | None  (Maximum über alle Läsionen links)
-        birads_re : "2"–"5" | None  (Maximum über alle Läsionen rechts)
+        birads_li : "2"–"5" | None  (maximum over all left-side lesions)
+        birads_re : "2"–"5" | None  (maximum over all right-side lesions)
         acr_li    : "1"–"4" | None
         acr_re    : "1"–"4" | None
-        lesions_li: list[str]  (Simone befund > Rad Befund, links)
-        lesions_re: list[str]  (Simone befund > Rad Befund, rechts)
+        lesions_li: list[str]  ('Simone befund', else 'Rad Befund', left)
+        lesions_re: list[str]  ('Simone befund', else 'Rad Befund', right)
     meta          : dict
-        conflicts : list[str]  (Hiwi-*_GT ≠ Original-GT; mit den aktuellen Daten immer leer)
+        conflicts : list[str]  (report-file *_GT ≠ ground truth; empty for the current data)
         n_lesions_li, n_lesions_re: int
 """
 import logging
@@ -47,11 +47,11 @@ _log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Interne Hilfsfunktionen
+# Internal helpers
 # ---------------------------------------------------------------------------
 
 def _safe_int(val):
-    """String → int, None bei Fehler."""
+    """String → int, None if not a number."""
     if val is None:
         return None
     try:
@@ -61,7 +61,7 @@ def _safe_int(val):
 
 
 def _max_birads(series: pd.Series):
-    """Maximaler BIRADS-Wert (als int-String) über eine Series von String-Werten."""
+    """Maximum BI-RADS value (as int string) over a series of string values."""
     vals = [_safe_int(v) for v in series.dropna()
             if str(v).strip() not in ("", "?", "nan", "None")]
     vals = [v for v in vals if v is not None]
@@ -69,7 +69,7 @@ def _max_birads(series: pd.Series):
 
 
 def _first_valid(series: pd.Series):
-    """Erstes nicht-leeres, nicht-'?'-Element als String."""
+    """First non-empty value that is not '?', as string."""
     for v in series.dropna():
         s = str(v).strip()
         if s and s not in ("?", "nan", "None"):
@@ -78,7 +78,7 @@ def _first_valid(series: pd.Series):
 
 
 def _lesion_type(row):
-    """Simone befund wenn vorhanden, sonst Rad Befund."""
+    """'Simone befund' if present, else 'Rad Befund'."""
     s = str(row.get("Simone befund") or "").strip()
     if s and s not in ("nan", "None", "?"):
         return s
@@ -87,7 +87,7 @@ def _lesion_type(row):
 
 
 def _normalize_side(val):
-    """Normalisiert 'Links'/'links'/'rechts'/'Rechts' → lowercase."""
+    """Normalise 'Links'/'links'/'rechts'/'Rechts' → lowercase."""
     if val is None:
         return None
     s = str(val).strip().lower()
@@ -102,35 +102,35 @@ def _normalize_side(val):
 
 def load_mamma_extraction(limit=None, config=None):
     """
-    Lädt Mamma-MRT Label-Extraction-Daten.
+    Load the Mamma-MRT label-extraction data.
 
-    Benötigt:
+    Requires:
         data/label_extraction/label_extraction_gt.xlsx
         data/label_extraction/hiwi_gt_ergaenzung.xlsx
 
-    Gibt Liste von Dicts zurück (ein Dict pro Untersuchung mit Befundtext).
+    Returns a list of dicts, one per exam with a report text.
     """
-    print("--- Lade Mamma-MRT Label Extraction ---")
+    print("--- Loading Mamma-MRT label extraction ---")
 
     if not _GT_PATH.exists():
         raise FileNotFoundError(
-            f"GT-Datei nicht gefunden: {_GT_PATH}\n"
-            "Erwartet: data/label_extraction/label_extraction_gt.xlsx"
+            f"Ground-truth file not found: {_GT_PATH}\n"
+            "Expected: data/label_extraction/label_extraction_gt.xlsx"
         )
     if not _HIWI_PATH.exists():
         raise FileNotFoundError(
-            f"Hiwi-Datei nicht gefunden: {_HIWI_PATH}\n"
-            "Erwartet: data/label_extraction/hiwi_gt_ergaenzung.xlsx"
+            f"Report file not found: {_HIWI_PATH}\n"
+            "Expected: data/label_extraction/hiwi_gt_ergaenzung.xlsx"
         )
 
     gt   = pd.read_excel(_GT_PATH,   dtype=str)
     hiwi = pd.read_excel(_HIWI_PATH, dtype=str)
 
-    # Join-Keys normalisieren
+    # Normalise the join keys
     gt["_id"]   = gt["ID gekürzt"].fillna("").str.strip()
     hiwi["_id"] = hiwi["AnforderungsNr"].fillna("").str.strip()
 
-    # Hiwi nach ID indizieren (eine Zeile pro Untersuchung erwartet)
+    # Index the report file by id (one row per exam expected)
     hiwi_idx = hiwi.set_index("_id")
 
     gt_grouped = gt.groupby("_id", sort=False)
@@ -154,31 +154,31 @@ def load_mamma_extraction(limit=None, config=None):
             n_no_text += 1
             continue
 
-        # Seite normalisieren
+        # Normalise the side
         group = group.copy()
         group["_side"] = group["Seite.1"].map(_normalize_side)
 
         li_rows = group[group["_side"] == "links"]
         re_rows = group[group["_side"] == "rechts"]
 
-        # Menopause (Untersuchungsebene)
+        # Menopause (exam level)
         menopause = _first_valid(group["Menopause"])
 
-        # BIRADS: Maximum über Läsionen pro Seite
+        # BI-RADS: maximum over the lesions of each side
         birads_li = _max_birads(li_rows["MR BIRADS"]) if not li_rows.empty else None
         birads_re = _max_birads(re_rows["MR BIRADS"]) if not re_rows.empty else None
 
-        # ACR (Untersuchungsebene, gleiche Spalte in allen Zeilen)
+        # ACR / BPE (exam level, same value in all rows of an exam)
         acr_li = _first_valid(group["MR-ACR links"])
         acr_re = _first_valid(group["MR-ACR rechts"])
 
-        # Läsionen pro Seite
+        # Lesions per side
         lesions_li = [t for _, r in li_rows.iterrows() if (t := _lesion_type(r)) is not None]
         lesions_re = [t for _, r in re_rows.iterrows() if (t := _lesion_type(r)) is not None]
 
-        # Konsistenzprüfung gegen die Hiwi-*_GT-Spalten. Diese sind eine Kopie der oben
-        # abgeleiteten Werte (geprüft: 0 Abweichungen, 0 Ergänzungen) – bei einer
-        # künftigen Abweichung gewinnt der Hiwi-Wert und der Konflikt wird protokolliert.
+        # Consistency check against the *_GT columns of the report file. They repeat the
+        # values derived above (currently identical); a differing value would win and be
+        # recorded as a conflict.
         conflicts: list = []
 
         def _apply_gt(hiwi_col: str, current, field: str):
@@ -218,9 +218,9 @@ def load_mamma_extraction(limit=None, config=None):
 
     n_conflicts_total = sum(len(it["meta"]["conflicts"]) for it in items)
     print(
-        f"  {len(items)} Untersuchungen geladen  "
-        f"({n_no_text} ohne Befundtext übersprungen, "
-        f"{n_conflicts_total} GT-Konflikte geloggt)"
+        f"  {len(items)} exams loaded  "
+        f"({n_no_text} without report text skipped, "
+        f"{n_conflicts_total} ground-truth conflicts logged)"
     )
 
     if limit:

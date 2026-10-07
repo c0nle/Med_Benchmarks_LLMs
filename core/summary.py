@@ -6,7 +6,7 @@ Flat key scheme for report rows {"type": "metric", "metric": m, "value": v, ...}
 where the qualifiers are the row's string-valued fields in the order
 subset, field, region, lesion_view, then any other string field (sorted),
 excluding type/metric/note/ci_method/unit. Characters outside [A-Za-z0-9] become "_".
-Special cases (backward compatible with the dicts evaluate.py returns):
+Special cases (matching the keys of the dicts evaluate.py returns):
   * lesion_view == "type" (Mamma main lesion view) is not part of the key
   * metric "llm_judge_accuracy_pct" is flattened as "judge_accuracy_pct"
   * rows of type "region_metric" give "<region>_<key>" for every *_pct field

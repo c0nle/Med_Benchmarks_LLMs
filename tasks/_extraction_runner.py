@@ -68,7 +68,7 @@ def format_rate(n_done: int, elapsed: float) -> str:
 
 
 def _read_completed(results_path: str, fieldnames: list):
-    """Return (completed_ids, file_has_rows). Upgrades an old header in place."""
+    """Return (completed_ids, file_has_rows). Adds missing columns to the header in place."""
     if not (os.path.exists(results_path) and os.path.getsize(results_path) > 0):
         return set(), False
     try:
@@ -82,7 +82,7 @@ def _read_completed(results_path: str, fieldnames: list):
         raise RuntimeError(f"Existing results file {results_path} has no 'id' column.")
     missing_cols = [c for c in fieldnames if c not in existing.columns]
     if missing_cols:
-        # Results from an older version: add the new columns (empty) so appended
+        # Header without some of the current columns: add them (empty) so appended
         # rows line up with the header.
         for c in missing_cols:
             existing[c] = ""

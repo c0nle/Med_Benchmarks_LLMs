@@ -1,5 +1,6 @@
 """
-Regression tests for evaluation fixes. Synthetic data only – no patient data.
+Evaluation tests (client, letter parser, RadBench loader, Arm/Mamma metrics, judge, WBSS).
+Synthetic data only – no patient data.
 """
 import json
 import os
@@ -143,7 +144,7 @@ def test_arm_eval_macro_excludes_undefined_and_splits_regions(tmp_path):
     # elbow: Fracture F1=0, Foreign Bodies F1=1 → macro 50
     assert r["elbow_macro_f1_pct"] == 50.0
     # citation from task-side checks: 1 of 2 correct
-    assert r["citation_match_pct"] == 50.0
+    assert r["verbatim_citation_rate_pct"] == 50.0
 
 
 def test_arm_eval_without_citation_column(tmp_path):
@@ -152,7 +153,7 @@ def test_arm_eval_without_citation_column(tmp_path):
     csv_path = tmp_path / "arm.csv"
     pd.DataFrame([row]).to_csv(csv_path, index=False)
     r = write_arm_extraction_report_jsonl(str(csv_path), str(tmp_path / "arm.jsonl"))
-    assert "citation_match_pct" not in r
+    assert "verbatim_citation_rate_pct" not in r
 
 
 # ---------------------------------------------------------------------------
@@ -206,11 +207,10 @@ def test_mamma_exact_match_order_insensitive(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Review fixes (letter parser, judge, yes/no, WBSS, CIs, robustness)
+# Letter parser, judge, yes/no, WBSS, robustness
 # ---------------------------------------------------------------------------
 
 from evaluate import (  # noqa: E402
-    _bootstrap_micro_f1_ci,
     _wbss,
     _yes_no_token,
     parse_judge_reply,
@@ -245,12 +245,6 @@ def test_yes_no_first_token():
 def test_wbss_identical_non_wordnet_tokens():
     assert _wbss("t2", "t2") == 1.0
     assert _wbss("CTA - CT angiography", "cta - ct angiography") == 1.0
-
-
-def test_micro_f1_ci_matches_point_estimate():
-    counts = [(0, 0, 0)] * 80 + [(1, 1, 0)] * 20
-    lo, hi = _bootstrap_micro_f1_ci(counts)
-    assert lo <= 2 / 3 <= hi
 
 
 def test_arm_string_false_is_negative_and_non_dict_is_error():

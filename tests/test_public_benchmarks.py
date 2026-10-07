@@ -76,7 +76,7 @@ def _metric(rows, metric, subset=None):
 
 
 # ---------------------------------------------------------------------------
-# MCQ letter extraction (real cases from run_full_20261002)
+# MCQ letter extraction (real model answers)
 # ---------------------------------------------------------------------------
 
 def test_last_explicit_answer_wins_self_correction():

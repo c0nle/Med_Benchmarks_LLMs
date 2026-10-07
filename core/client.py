@@ -79,11 +79,11 @@ class MedicalLLMClient:
                 from openai import OpenAI
             except ImportError as e:
                 raise RuntimeError(
-                    "OpenAI SDK ist nicht installiert. Installiere es mit `pip install openai` "
-                    "oder setze in config.yaml `server.client: requests`."
+                    "The OpenAI SDK is not installed. Install it with `pip install openai` "
+                    "or set `server.client: requests` in the config."
                 ) from e
 
-            # OpenAI SDK benötigt base_url bis inkl. /v1
+            # The OpenAI SDK expects base_url up to and including /v1
             self._openai_client = OpenAI(
                 base_url=self.base_url,
                 api_key=self.api_key or "EMPTY",

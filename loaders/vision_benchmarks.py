@@ -90,7 +90,7 @@ def _build_options_list(raw) -> list:
 def _answer_alternatives(raw) -> list:
     """
     All accepted answers of a VQA-Med-2019 row. The HF dataset stores a list
-    (e.g. ['ct w/contrast', 'ct w/contrast iv']); older exports a list-repr string.
+    (e.g. ['ct w/contrast', 'ct w/contrast iv']); some exports store a list-repr string.
     """
     if isinstance(raw, (list, tuple)):
         vals = [str(a).strip() for a in raw]
@@ -143,18 +143,17 @@ def _format_vqa_med_item(item: dict, idx: int) -> dict:
 
 def load_vqa_med_2019(limit=None):
     """
-    Loads VQA-Med-2019 from data/vqa_med_2019.parquet.
-    Download (VQA-Med-2019): https://huggingface.co/datasets/simwit/vqa-med-2019
-    Download (VQA-RAD, smaller): https://huggingface.co/datasets/flaviagiammarino/vqa-rad
-    Either dataset works; VQA-Med-2019 is the ImageCLEF 2019 benchmark (Ben Abacha et al.).
+    Loads VQA-Med-2019 from data/vqa_med_2019.parquet: the 500-question test set of the
+    ImageCLEF 2019 VQA-Med task (Ben Abacha et al.), e.g. the test split of
+    https://huggingface.co/datasets/simwit/vqa-med-2019 saved as parquet.
     """
-    print("--- Lade VQA-Med-2019 ---")
+    print("--- Loading VQA-Med-2019 ---")
 
     if not _VQA_MED_PATH.exists():
         raise FileNotFoundError(
-            f"VQA-Med-2019 nicht gefunden: {_VQA_MED_PATH}\n"
-            "Download: https://huggingface.co/datasets/flaviagiammarino/vqa-rad\n"
-            "Datei ablegen als: data/vqa_med_2019.parquet"
+            f"VQA-Med-2019 not found: {_VQA_MED_PATH}\n"
+            "Download the test split of https://huggingface.co/datasets/simwit/vqa-med-2019\n"
+            "and save it as data/vqa_med_2019.parquet (see README)."
         )
 
     items = _load_local_parquet(str(_VQA_MED_PATH))
@@ -235,11 +234,11 @@ def load_radimagenet_vqa(limit=None):
 
     Note: Requires a vision-capable LLM (VLM).
     """
-    print("--- Lade RadImageNet-VQA (CT/MRT Benchmark) ---")
+    print("--- Loading RadImageNet-VQA (CT/MRI benchmark split) ---")
 
     if not _RADIMAGENET_BENCHMARK_PATH.exists():
         raise FileNotFoundError(
-            f"RadImageNet-VQA benchmark split nicht gefunden: {_RADIMAGENET_BENCHMARK_PATH}\n"
+            f"RadImageNet-VQA benchmark split not found: {_RADIMAGENET_BENCHMARK_PATH}\n"
             "Download:\n"
             "  HF_TOKEN=hf_... python3 -c \"\n"
             "  from datasets import load_dataset; import os\n"
@@ -252,7 +251,7 @@ def load_radimagenet_vqa(limit=None):
     if limit:
         items = items[:limit]
 
-    print(f"  {len(items)} Items geladen.")
+    print(f"  {len(items)} items loaded.")
     return [_format_radimagenet_benchmark_item(item, idx) for idx, item in enumerate(items)]
 
 
@@ -278,7 +277,7 @@ def _detect_radbench_qtype(item: dict) -> str:
 
 # Image cache, filled by scripts/download_radbench_images.py. File name = sha1(reference)[:16]
 # + extension, because the last URL segment is not unique (4 Radiopaedia URLs end in
-# "0._jumbo.jpeg"; the old cache data/radbench_images/ kept only one of them).
+# "0._jumbo.jpeg").
 _RADBENCH_IMAGE_DIR = Path("data/radbench_images_v2")
 _MEDPIX_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
 
@@ -294,7 +293,7 @@ def radbench_image_refs(image_ids) -> list:
 
 
 def radbench_image_kind(ref: str) -> str:
-    """'url' (downloadable), 'medpix' (UUID; MedPix API no longer available) or 'unresolvable'."""
+    """'url' (downloadable), 'medpix' (UUID; MedPix is currently offline) or 'unresolvable'."""
     ref = ref.strip()
     if ref.lower().startswith(("http://", "https://")):
         return "url"
@@ -385,7 +384,7 @@ def _format_radbench_item(item: dict, idx: int) -> dict:
     primary_image = images[0] if images else None
 
     # CASE_ID is shared by all questions of a case; append the CSV row number.
-    # (The id keeps the historic float formatting "77654.0-q220" so old results resume.)
+    # (The id keeps the float formatting "77654.0-q220" so that ids stay stable across runs.)
     case_id = str(item.get("CASE_ID") or item.get("id") or item.get("qid") or "radbench")
     cluster = _radbench_case_id(item) or ("medpix:" + ",".join(sorted(refs)) if refs else case_id)
     return {
@@ -429,8 +428,8 @@ def load_radbench(limit=None, config=None):
       - Modality: X-ray (plain film), often several images per question
 
     Which questions are run (all counts are printed):
-      1. MedPix questions are dropped unless their images are in the cache – the MedPix
-         API is no longer available (212 questions).
+      1. MedPix questions are dropped unless their images are in the cache – MedPix is
+         currently offline (212 questions).
       2. Questions with an image reference that is neither a URL nor a MedPix id are
          dropped unless that image was placed in the cache by hand: case 77654 lists the
          bare Radiopaedia image id "52662257" (2 questions, both "compare first/second study").
@@ -444,17 +443,17 @@ def load_radbench(limit=None, config=None):
       - Open-ended          → exact match, WBSS, LLM-as-a-Judge
 
     Download: https://github.com/harrison-ai/radbench
-    Datei ablegen als: data/radbench.csv
-    X-ray Bilder herunterladen: python scripts/download_radbench_images.py
+    Place the file at: data/radbench.csv
+    Download the X-ray images: python scripts/download_radbench_images.py
     """
-    print("--- Lade RadBench (harrison.ai – VLM Röntgen-Benchmark) ---")
+    print("--- Loading RadBench (harrison.ai, X-ray VQA) ---")
 
     if not _RADBENCH_PATH.exists():
         raise FileNotFoundError(
-            f"RadBench nicht gefunden: {_RADBENCH_PATH}\n"
+            f"RadBench not found: {_RADBENCH_PATH}\n"
             "Download: git clone https://github.com/harrison-ai/radbench data/radbench_repo\n"
-            "Dann: cp data/radbench_repo/data/radbench/radbench.csv data/radbench.csv\n"
-            "Bilder: python scripts/download_radbench_images.py"
+            "Then: cp data/radbench_repo/data/radbench/radbench.csv data/radbench.csv\n"
+            "Images: python scripts/download_radbench_images.py"
         )
     policy = _radbench_missing_policy(config)
 
@@ -476,8 +475,8 @@ def load_radbench(limit=None, config=None):
     dropped_ids = {id(it) for it in medpix_dropped}
     items = [it for it in items if id(it) not in dropped_ids]
     if medpix_dropped:
-        print(f"  {len(medpix_dropped)} MedPix-Fragen ohne Bild herausgefiltert "
-              f"(MedPix-API nicht mehr verfügbar)")
+        print(f"  {len(medpix_dropped)} MedPix questions without images skipped "
+              f"(MedPix is currently offline)")
 
     # 2. References that cannot be downloaded (not a URL, not MedPix) and were not supplied by hand
     unresolvable = [it for it in items
@@ -508,12 +507,12 @@ def load_radbench(limit=None, config=None):
         print(f"  WARNING: {msg} – skipping these questions (missing_images: skip_question)")
         items = [it for it in items if _qid(it) not in missing]
 
-    print(f"  {n_rows} Zeilen → {len(items)} Fragen mit allen Bildern")
+    print(f"  {n_rows} rows → {len(items)} questions with all images")
 
     if limit:
         items = items[:limit]
 
     formatted = [_format_radbench_item(item, idx) for idx, item in enumerate(items)]
     n_imgs = sum(len(it["meta"]["all_images"]) for it in formatted)
-    print(f"  {len(formatted)} Fragen, {n_imgs} Bilder geladen aus {_RADBENCH_IMAGE_DIR}/")
+    print(f"  {len(formatted)} questions, {n_imgs} images loaded from {_RADBENCH_IMAGE_DIR}/")
     return formatted

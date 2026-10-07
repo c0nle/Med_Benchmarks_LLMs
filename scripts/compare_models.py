@@ -9,8 +9,7 @@ and the model name from run_info_*.json (fallback: fingerprint.json, dir name).
 
 Writes to --out-dir:
   comparison.csv  benchmark, metric, model, value, ci_lo, ci_hi, n, complete
-                  (all numeric report metrics; old key citation_match_pct is
-                  reported as verbatim_citation_rate_pct)
+                  (all numeric report metrics)
   comparison.png  grouped bars of the headline metrics, one colour per model
                   (order of the run dirs), 95% CI where available, incomplete
                   benchmarks hatched
@@ -35,7 +34,6 @@ from core.summary import load_run_summary                     # noqa: E402
 # Categorical colours in fixed order (one per model)
 MODEL_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"]
 
-METRIC_RENAMES = {"citation_match_pct": "verbatim_citation_rate_pct"}
 _SKIP_SUFFIXES = ("_ci_lo", "_ci_hi", "_ci_method", "_n")
 _STATUS = {"n_items", "n_expected", "n_api_errors", "complete", "stop_reason"}
 
@@ -65,21 +63,11 @@ def model_name_of(run_dir: str) -> str:
     return os.path.basename(os.path.normpath(run_dir))
 
 
-def _renamed(metrics: dict) -> dict:
-    out = dict(metrics)
-    for old, new in METRIC_RENAMES.items():
-        for suffix in ("",) + _SKIP_SUFFIXES:
-            if old + suffix in out and new + suffix not in out:
-                out[new + suffix] = out.pop(old + suffix)
-    return out
-
-
 def comparison_rows(runs: list) -> list:
     """runs: [(model_label, run_dir)] -> list of CSV row dicts."""
     rows = []
     for label, run_dir in runs:
         for bench, metrics, _ in load_run_summary(run_dir):
-            metrics = _renamed(metrics)
             for key, value in metrics.items():
                 if key in _STATUS or key.endswith(_SKIP_SUFFIXES):
                     continue
@@ -174,7 +162,7 @@ def comparison_chart(runs: list, out_path: str) -> bool:
     from matplotlib.patches import Patch
 
     labels = [label for label, _ in runs]
-    summaries = [{b: _renamed(m) for b, m, _ in load_run_summary(d)} for _, d in runs]
+    summaries = [{b: m for b, m, _ in load_run_summary(d)} for _, d in runs]
 
     panels = []
     for title, _, spec in _PANELS:

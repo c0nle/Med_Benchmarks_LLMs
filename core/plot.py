@@ -36,7 +36,6 @@ _PANELS = [
         ("label_extraction_mamma", "lesions_re_micro_f1_pct", "Lesions\nR F1",     None),
         ("label_extraction_arm",   "micro_f1_pct",            "Micro-F1",          None),
         ("label_extraction_arm",   "macro_f1_pct",            "Macro-F1",          None),
-        ("label_extraction",       "micro_f1_pct",            "Micro-F1",          None),
     ]),
 ]
 
@@ -44,7 +43,6 @@ _DISPLAY = {
     "medqa": "MedQA", "rar": "RaR", "radiorag": "RadioRAG",
     "radbench": "RadBench", "vqa_med_2019": "VQA-Med-2019", "radimagenet_vqa": "RadImageNet-VQA",
     "label_extraction_mamma": "Mamma-MRT", "label_extraction_arm": "Arm X-ray",
-    "label_extraction": "NER",
 }
 
 _INK = "#222222"
@@ -67,10 +65,10 @@ def sample_size(metrics: dict, key: str):
         if key.startswith(subset + "_"):
             candidates.append(f"{subset}_rows")
             break
-    for suffix in ("_accuracy_pct", "_macro_f1_pct"):  # Mamma fields: <field>_n_bewertet
+    for suffix in ("_accuracy_pct", "_macro_f1_pct"):  # Mamma fields: <field>_n_scored
         if key.endswith(suffix):
-            candidates.append(key[: -len(suffix)] + "_n_bewertet")
-    candidates += ["rows", "n_gesamt", "n_items"]
+            candidates.append(key[: -len(suffix)] + "_n_scored")
+    candidates += ["rows", "n_total", "n_items"]
     for c in candidates:
         n = _num(metrics.get(c))
         if n is not None:

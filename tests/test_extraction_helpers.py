@@ -1,7 +1,6 @@
 """
-Unit-Tests fuer label_extraction_mamma und label_extraction_arm.
-
-Alle Tests verwenden ausschliesslich synthetische Mini-Daten – keine Patientendaten.
+Unit tests for the label-extraction helpers (normalisation, loaders, JSON parsing, CIs).
+Synthetic mini data only – no patient data.
 """
 import json
 import sys
@@ -13,11 +12,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 # ===========================================================================
-# Normalisierungs-Tests (Menopause, BIRADS, ACR, Laesionen)
+# Normalisation (menopause, BI-RADS, ACR, lesions)
 # ===========================================================================
 
 class TestNormalization:
-    """Tests fuer _build_normalizer und _normalize_val / _normalize_birads / _normalize_acr."""
+    """Tests for _build_normalizer and _normalize_val / _normalize_birads / _normalize_acr."""
 
     def setup_method(self):
         from evaluate import _build_normalizer, _normalize_val, _normalize_birads, _normalize_acr
@@ -38,7 +37,7 @@ class TestNormalization:
 
     def test_menopause_unknown_passthrough(self):
         norm = self.build_normalizer({"post": ["postmenopausal"]})
-        # Unbekannter Wert → lowercase durchgereicht
+        # Unknown value → passed through in lowercase
         result = self.normalize_val("Sonstiges", norm)
         assert result == "sonstiges"
 
@@ -55,7 +54,7 @@ class TestNormalization:
 
     def test_birads_leading_digit(self):
         norm = self.build_normalizer({})
-        # Kein Mapping → fuehrende Ziffer extrahieren
+        # No mapping → extract the leading digit
         assert self.normalize_birads("4 Suspekt", norm) == "4"
         assert self.normalize_birads("5 Hochgradig suggestiv für Malignität", norm) == "5"
 
@@ -110,11 +109,11 @@ class TestNormalization:
 
 
 # ===========================================================================
-# BIRADS-Aggregation (Max ueber Laesionen)
+# BI-RADS aggregation (maximum over lesions)
 # ===========================================================================
 
 class TestBiradsAggregation:
-    """Tests fuer _max_birads aus dem Mamma-Loader."""
+    """Tests for _max_birads of the Mamma loader."""
 
     def setup_method(self):
         import pandas as pd
@@ -144,11 +143,11 @@ class TestBiradsAggregation:
 
 
 # ===========================================================================
-# Multiset-Matching (Laesionen)
+# Multiset matching (lesions)
 # ===========================================================================
 
 class TestMultisetPRF:
-    """Tests fuer _multiset_prf."""
+    """Tests for _multiset_prf."""
 
     def setup_method(self):
         from evaluate import _multiset_prf
@@ -185,11 +184,11 @@ class TestMultisetPRF:
 
 
 # ===========================================================================
-# JSON-Reparatur fuer Arm-Templates
+# JSON repair for the Arm templates
 # ===========================================================================
 
 class TestJsonRepair:
-    """Tests fuer _repair_json."""
+    """Tests for _repair_json."""
 
     def setup_method(self):
         from loaders.arm_extraction import _repair_json
@@ -205,7 +204,7 @@ class TestJsonRepair:
     def test_valid_json_unchanged(self):
         valid = '{\n  "A": {"finding": true, "citation": "text"},\n  "B": {"finding": false, "citation": ""}\n}'
         repaired = self.repair_json(valid)
-        # Valides JSON sollte weiterhin parsbar sein
+        # Valid JSON must still parse
         parsed = json.loads(repaired)
         assert parsed["A"]["finding"] is True
 
@@ -218,11 +217,11 @@ class TestJsonRepair:
 
 
 # ===========================================================================
-# ID-Extraktion aus Bildpfaden (Arm)
+# Report id from image paths (Arm)
 # ===========================================================================
 
 class TestArmIdExtraction:
-    """Tests fuer _extract_id."""
+    """Tests for _extract_id."""
 
     def setup_method(self):
         from loaders.arm_extraction import _extract_id
@@ -245,17 +244,17 @@ class TestArmIdExtraction:
         assert self.extract_id(path, "parent_dir") == "567"
 
     def test_filename_without_extension(self):
-        # Robustheit: Pfad ohne Extension
+        # Path without extension
         path = "ConvertedPNGs/123"
         assert self.extract_id(path, "filename") == "123"
 
 
 # ===========================================================================
-# Mamma Task JSON-Parsing
+# Mamma task: JSON parsing
 # ===========================================================================
 
 class TestMammaJsonParsing:
-    """Tests fuer _parse_response im Mamma-Task."""
+    """Tests for _parse_response of the Mamma task."""
 
     def setup_method(self):
         from tasks.mamma_extraction import _parse_response, _extract_side
@@ -308,11 +307,11 @@ class TestMammaJsonParsing:
 
 
 # ===========================================================================
-# Arm Task JSON-Parsing
+# Arm task: JSON parsing
 # ===========================================================================
 
 class TestArmJsonParsing:
-    """Tests fuer _parse_response im Arm-Task."""
+    """Tests for _parse_response of the Arm task."""
 
     def setup_method(self):
         from tasks.arm_extraction import _parse_response
@@ -336,7 +335,7 @@ class TestArmJsonParsing:
                           "Displacement": {"finding": False, "citation": ""}})
         parsed, err = self.parse_response(raw, self._LABELS)
         assert err is False
-        # Fehlende Labels werden als fehlend (finding=None) markiert, nicht als negativ
+        # Missing labels are marked as missing (finding=None), not as negative
         assert parsed["Ossicles"]["finding"] is None
         assert parsed["Displacement"]["finding"] is False
 
@@ -357,11 +356,11 @@ class TestArmJsonParsing:
 
 
 # ===========================================================================
-# Bootstrap-CI
+# Bootstrap CI
 # ===========================================================================
 
 class TestBootstrapCI:
-    """Tests fuer _bootstrap_ci."""
+    """Tests for _bootstrap_ci."""
 
     def setup_method(self):
         from evaluate import _bootstrap_ci

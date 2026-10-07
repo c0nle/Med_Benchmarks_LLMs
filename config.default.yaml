@@ -81,15 +81,15 @@ judge:
 #                     Paper: Tayebi Arasteh et al. 2024 (https://arxiv.org/abs/2407.15621)
 #                     GitHub: https://github.com/tayebiarasteh/RadioRAG
 #                     Note: dataset NOT on HuggingFace — local file required
-#   label_extraction_mamma – Strukturierte Label-Extraktion aus deutschen Mamma-MRT-Befunden
-#                     Metriken: Accuracy + Macro-F1 (Menopause, BIRADS, ACR = BPE),
-#                               Laesionen: Typ-Micro-F1 + Exact Match pro Seite (Hauptmetrik),
-#                               zusaetzlich Anzahl-basiert (Multiset); 95%-Bootstrap-CIs
-#                     Daten: data/label_extraction/ (nicht oeffentlich — lokal erforderlich)
-#   label_extraction_arm – Binaere Label-Extraktion (mit Zitat) aus deutschen Arm-Roentgenbefunden
-#                     Metriken: F1 pro Label, Macro-/Micro-F1, Sensitivitaet/Spezifizitaet,
-#                               wortgetreue Zitat-Rate (verbatim citation rate), 95%-Bootstrap-CIs
-#                     Daten: data/label_extraction/Label_Extraction_Kilian/
+#   label_extraction_mamma – structured label extraction from German breast-MRI reports
+#                     Metrics: accuracy + macro-F1 (menopause, BI-RADS, ACR = BPE),
+#                              lesions: type micro-F1 + exact match per side (primary),
+#                              plus count-based (multiset) scores; 95 % bootstrap CIs
+#                     Data: data/label_extraction/ (not public — must be provided locally)
+#   label_extraction_arm – binary label extraction (with citation) from German arm X-ray reports
+#                     Metrics: F1 per label, macro/micro-F1, sensitivity/specificity,
+#                              verbatim citation rate; 95 % bootstrap CIs
+#                     Data: data/label_extraction/Label_Extraction_Kilian/ (not public)
 #                     Paper: Kreutzer et al. Eur Radiol 2025
 #                            https://doi.org/10.1007/s00330-025-12102-1
 benchmark: [medqa, rar, radbench, vqa_med_2019, radimagenet_vqa, radiorag, label_extraction_mamma, label_extraction_arm]
@@ -105,13 +105,13 @@ benchmark_settings:
   # optional: stop a benchmark after this many failed requests (run is flagged INCOMPLETE)
   max_errors: 200
 
-# Per-Task-Overrides (z.B. max_tokens fuer JSON-intensive Tasks)
+# Per-task overrides (e.g. max_tokens for JSON-heavy tasks)
 task_settings:
   label_extraction_mamma:
     max_tokens: 2048
     acr_range: min             # "min" | "max" | "error"
     birads6_handling: map_to_5 # "map_to_5" | "keep"
-    gt_empty_ext_present: ignore  # "ignore" | "fp" (GT leer, Modell liefert Wert; gilt auch fuer Laesions-Seiten)
+    gt_empty_ext_present: ignore  # "ignore" | "fp": GT empty (= not annotated) but model gives a value; also applies to lesion sides
   radbench:
     missing_images: error      # "error" | "skip_question" (images: python scripts/download_radbench_images.py)
   label_extraction_arm:

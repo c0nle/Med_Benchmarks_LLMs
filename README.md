@@ -14,11 +14,10 @@ evaluated without data leaving the institution.
 | RaR (`rar`)                              | Text MCQ (radiology board exam, 5 options)   |      —       | Accuracy                                                        |
 | RadioRAG (`radiorag`)                    | Text MCQ variant (radiology, 4 options)      |      —       | Accuracy                                                        |
 | RadBench (`radbench`)                    | X-ray image VQA (MCQ / yes-no / open)        |      ✅      | MCQ Acc. / Yes-No Acc. / Open: LLM-Judge (+ Exact, WBSS)        |
-| VQA-Med-2019 (`vqa_med_2019`)            | Medical image VQA (open)                     |      ✅      | LLM-Judge, Exact match (+ WBSS); per category                   |
+| VQA-Med-2019 (`vqa_med_2019`)            | Medical image VQA (open)                     |      ✅      | Exact match (official accuracy), LLM-Judge (+ WBSS); per category |
 | RadImageNet-VQA (`radimagenet_vqa`)      | CT/MRI image VQA (MCQ / yes-no / open)       |      ✅      | MCQ Acc. / Yes-No Acc. / Open: LLM-Judge; per content type      |
 | Mamma-MRT extraction (`label_extraction_mamma`) | Structured extraction, German breast MRI reports | — | Accuracy (+CI), Macro-F1, coverage per field; exam-level BPE accuracy; lesion-type Micro-P/R/F1 (+CIs) / Exact; sensitivity analyses |
 | Arm X-ray extraction (`label_extraction_arm`)   | Binary labels + citation, German arm X-ray reports | — | Micro-/Macro-F1 and MCC (overall and per region, 95% CIs), Sens./Spec. per label, verbatim-citation rate |
-| Label Extraction (`label_extraction`)    | NER (entity strings)                         |      —       | Entity-string Micro F1 (needs `data/extraction.parquet`, not included) |
 
 > VLM benchmarks always send the image(s), so the model must accept image input.
 > Images are sent losslessly as PNG. Multi-image RadBench questions send all images the question references, in order
@@ -29,6 +28,8 @@ evaluated without data leaving the institution.
 ## Setup
 
 ### 1. Install dependencies
+
+Python ≥ 3.9.
 
 ```bash
 pip install -r requirements.txt          # exact reference environment: requirements.lock
@@ -73,21 +74,30 @@ benchmark_settings:
 `config.yaml` is git-ignored. For several models, keep one config per model in `configs_local/` (also git-ignored)
 and pass it with `--config`.
 
-### 3. Download datasets
+### 3. Provide the datasets
 
-Most benchmarks load automatically. A few require manual download:
+The repository contains no data. Place each dataset under `data/` (git-ignored; a symlink to a shared data
+directory works too). See [Data licences](#data-licences) before downloading or sharing anything.
 
 | Benchmark        | Source                                                                                               | Place at                                     |
 | ---------------- | ---------------------------------------------------------------------------------------------------- | -------------------------------------------- |
-| MedQA            | Auto (HuggingFace) or [openlifescienceai/medqa](https://huggingface.co/datasets/openlifescienceai/medqa) | `data/medqa-test.parquet`                  |
-| VQA-Med-2019     | Auto (HuggingFace) or [simwit/vqa-med-2019](https://huggingface.co/datasets/simwit/vqa-med-2019)         | `data/vqa_med_2019.parquet`                |
-| RadImageNet-VQA  | [raidium/RadImageNet-VQA](https://huggingface.co/datasets/raidium/RadImageNet-VQA)                       | `data/radimagenet_vqa_benchmark.parquet`   |
-| RadBench         | [harrison-ai/radbench](https://github.com/harrison-ai/radbench); images: `python scripts/download_radbench_images.py` | `data/radbench.csv`, `data/radbench_images_v2/` |
-| RaR              | Wind et al. 2025, see the [paper](https://www.nature.com/articles/s41746-025-02250-5)'s data availability | `data/RaR_dataset_WithAnswer.csv`          |
-| RadioRAG         | Contact authors via [GitHub](https://github.com/tayebiarasteh/RadioRAG)                                  | `data/RadioRAG_WithOptions_WithAnswer.csv` |
+| MedQA            | Test split (1,273 questions, 4 options) of [openlifescienceai/medqa](https://huggingface.co/datasets/openlifescienceai/medqa), saved as parquet | `data/medqa-test.parquet` |
+| VQA-Med-2019     | Test split (500 questions) of [simwit/vqa-med-2019](https://huggingface.co/datasets/simwit/vqa-med-2019), saved as parquet | `data/vqa_med_2019.parquet` |
+| RadImageNet-VQA  | [raidium/RadImageNet-VQA](https://huggingface.co/datasets/raidium/RadImageNet-VQA), config `benchmark`, split `test` (gated; snippet below) | `data/radimagenet_vqa_benchmark.parquet` |
+| RadBench         | `radbench.csv` from [harrison-ai/radbench](https://github.com/harrison-ai/radbench); images: `python scripts/download_radbench_images.py` | `data/radbench.csv`, `data/radbench_images_v2/` |
+| RaR              | The 65 board-exam questions in Supplementary Note 5 of Wind et al. 2025 ([doi](https://doi.org/10.1038/s41746-025-02250-5)) | `data/RaR_dataset_WithAnswer.csv` |
+| RadioRAG         | 4-option version used by Wind et al. 2025 (from the authors); the open-ended questions are in the appendix of the [RadioRAG paper](https://doi.org/10.1148/ryai.240476) | `data/RadioRAG_WithOptions_WithAnswer.csv` |
 | Mamma-MRT        | Not public (local patient data)                                                                      | `data/label_extraction/label_extraction_gt.xlsx` (ground truth) + `hiwi_gt_ergaenzung.xlsx` (report texts; its `*_GT` columns are identical to the ground truth and only used as a consistency check) |
 | Arm X-ray        | Not public (local patient data; Kreutzer et al., Eur Radiol 2025)                                    | `data/label_extraction/Label_Extraction_Kilian/` |
-| Label Extraction | Your own radiology NER dataset                                                                       | `data/extraction.parquet`                  |
+
+RadImageNet-VQA (accept the dataset terms on Hugging Face first):
+
+```bash
+HF_TOKEN=hf_... python -c "
+from datasets import load_dataset; import os
+ds = load_dataset('raidium/RadImageNet-VQA', name='benchmark', split='test', token=os.environ['HF_TOKEN'])
+ds.to_parquet('data/radimagenet_vqa_benchmark.parquet')"
+```
 
 RadBench images are stored as `sha1(url)[:16]` + extension with a `manifest.csv` (url, file, sha256). A missing image
 stops the run; set `task_settings.radbench.missing_images: skip_question` to skip such questions instead.
@@ -112,7 +122,8 @@ python main.py --run-dir results/run_<timestamp>  # resume: finished items are s
                                                   # failed requests and missing judge verdicts are redone
 ```
 
-On the HPC cluster submit `run.sh` from the project directory (arguments are passed to `main.py`):
+On a SLURM cluster submit `run.sh` from the project directory (arguments are passed to `main.py`; its `#SBATCH`
+lines are set for the RWTH CLAIX cluster, adapt account and partition elsewhere):
 
 ```bash
 sbatch run.sh --config configs_local/<model>.yaml --run-dir results/study/<model>
@@ -130,8 +141,9 @@ is marked INCOMPLETE so it can be resumed.
 benchmark; only one thread writes the results CSV. Two jobs may share a `--run-dir` only for different benchmarks;
 a second job on the same benchmark exits with "already running" (lock file `.<benchmark>.lock`).
 
-**Resume safety.** `fingerprint.json` stores model, judge, sampling settings and the system-prompt hash; resuming
-with a different model or judge is refused (`--force-resume` overrides). Duplicate result rows are reduced to the
+**Resume safety.** `fingerprint.json` stores model, judge, sampling settings, the system-prompt hash and a hash of
+the code that builds the model input (`tasks/`, `loaders/`, `core/client.py`); resuming with a different model or
+judge is refused (`--force-resume` overrides), other differences print a warning. Duplicate result rows are reduced to the
 latest answer per id; answers for items outside the current `--limit` are kept but not evaluated.
 
 **Exit codes.** 0 = all benchmarks complete; 1 = a benchmark failed or is incomplete (including API errors);
@@ -148,7 +160,8 @@ benchmark: [medqa, radbench, vqa_med_2019]        # several
 benchmark: all                                    # all registered
 ```
 
-Available names: `medqa`, `rar`, `radbench`, `vqa_med_2019`, `radimagenet_vqa`, `radiorag`, `label_extraction_mamma`, `label_extraction_arm`, `label_extraction` (needs its own data file, so `all` fails without it)
+Available names: `medqa`, `rar`, `radbench`, `vqa_med_2019`, `radimagenet_vqa`, `radiorag`, `label_extraction_mamma`,
+`label_extraction_arm`. `all` needs every dataset, including the non-public extraction data.
 
 `limit_samples` (a positive number, or `null`/`all`) takes the first N items of each benchmark in file order
 (deterministic, not stratified); for Arm X-ray the regions are interleaved before the cut.
@@ -203,12 +216,11 @@ python evaluate.py results/<run>/label_extraction_arm_results.csv --type arm_ext
 
 - MCQ: question + options, "Reply with only the correct letter".
 - Yes/No: "Reply with only 'Yes' or 'No'".
-- Open-ended VQA: "Answer the question with a single word or a short phrase." (before 2026-10 the prompt asked for
-  "key medical terms only"; results from older runs are not comparable).
+- Open-ended VQA: "Answer the question with a single word or a short phrase."
 - Mamma-MRT: German system and user prompt with a JSON schema. BI-RADS is asked as 2–5 by imaging finding, also
-  for an already histologically proven carcinoma (the annotation never uses 6; before 2026-10-06 the prompt offered
-  6 = proven malignancy and models used it in staging reports). Arm X-ray: JSON with one entry per label and a
-  verbatim citation; the datasets contain no label definitions, so the prompt lists label names only.
+  for an already histologically proven carcinoma, because the annotation never uses 6 (offering 6 = proven
+  malignancy makes models answer 6 in staging reports). Arm X-ray: JSON with one entry per label and a verbatim
+  citation; the datasets contain no label definitions, so the prompt lists label names only.
 - Default system prompt for public benchmarks: "You are a medical expert in diagnostic imaging. Answer concisely and
   in English."
 
@@ -222,11 +234,10 @@ python evaluate.py results/<run>/label_extraction_arm_results.csv --type arm_ext
 | RaR              | Radiology board-exam MCQ (5-choice)                       | Accuracy                    |       20%       | Small (n=65) and near ceiling; answer key skewed (C = 27/65) |
 | RadioRAG         | Radiology factual QA (4-choice MCQ)                       | Accuracy                    |       25%       | Originally open-ended; converted to MCQ      |
 | RadBench         | X-ray questions with image(s)                             | Accuracy / LLM-Judge        | 1/#options; 50% yes/no | Radiopaedia cases only: 283 questions (63 MCQ, 147 yes/no, 73 open) on 49 cases; 212 MedPix questions dropped (images unavailable); 2 questions of case 77654 dropped (image reference `52662257` is not a URL) |
-| VQA-Med-2019     | Medical image VQA: modality, plane, organ, abnormality    | LLM-Judge / Exact match     |       —         | 500 items (125 per category); official metric: exact-match accuracy |
+| VQA-Med-2019     | Medical image VQA: modality, plane, organ, abnormality    | Exact match / LLM-Judge     |       —         | 500 items (125 per category); official metrics: accuracy and BLEU (BLEU is not computed here) |
 | RadImageNet-VQA  | CT/MRI: MCQ (2000), yes/no (5000), open (2000)            | Accuracy / LLM-Judge        |   25% / 50%     | 9K items on 1K images; per content type (anatomy / pathology / pathology_specific) |
 | Mamma-MRT        | Menopause, BI-RADS and BPE ("ACR") per side, lesion types per side | Accuracy, Macro-F1, Micro-F1 | majority class | 302 exams; see definitions below |
 | Arm X-ray        | 18–28 binary findings per region + supporting citation   | Micro/Macro-F1, MCC          | all-negative accuracy | 1371 test reports (clavicle 233, elbow 745, thumb 393) |
-| Label Extraction | Entity strings from radiology reports                     | Micro F1                    |       —       | Not the RadGraph span protocol               |
 
 ---
 
@@ -244,13 +255,13 @@ Failed API calls count as wrong and are reported as `n_api_errors`.
 ### Exact match (open questions)
 
 Normalised string equality (lowercase, punctuation removed) against any accepted reference (VQA-Med-2019 lists
-several for 32 questions) — the official VQA-Med-2019 accuracy.
+several for 32 questions). This re-implements the official VQA-Med-2019 accuracy; it is not the official scorer.
 
 ### WBSS — Word-Based Semantic Similarity
 
 Secondary metric from VQA-Med 2018 (Wu-Palmer similarity over WordNet; re-implementation, not the official scorer).
 It is reported together with `wbss_shuffled_baseline_pct` (references permuted, seed 42): unrelated answers already
-scored ≈ 37–46% on an earlier run, so WBSS is not used as a headline metric.
+score ≈ 29–46 % (depending on benchmark and model), so WBSS is not used as a headline metric.
 
 ### LLM-as-a-Judge
 
@@ -261,8 +272,7 @@ agreement analysis; verdicts are cached per judge model.
 
 ### Micro F1
 
-TP/FP/FN aggregated across all items before computing precision/recall. Used for Label Extraction (entity strings),
-Mamma lesions and Arm labels.
+TP/FP/FN aggregated across all items before computing precision/recall. Used for Mamma lesions and Arm labels.
 
 ### Mamma-MRT extraction
 
@@ -297,7 +307,7 @@ scored as negative predictions (FN for a positive label), as Mamma scores a miss
 `verbatim_citation_rate_pct` is the share of citations (for findings marked present) that occur verbatim in the
 report (case/whitespace-insensitive, ≥ 4 characters). It is split into true-positive and false-positive calls,
 because a verbatim quote is not evidence that the finding is correct. It is checked at run time, because the report
-text is not stored. `citation_match_pct` is a deprecated alias.
+text is not stored.
 
 ### Confidence intervals
 
@@ -310,22 +320,53 @@ text is not stored. `citation_match_pct` is a deprecated alias.
 
 ---
 
+## Data licences
+
+No dataset is redistributed with this repository. Check the terms of each source before use:
+
+| Dataset          | Terms (as stated by the source)                                                                    |
+| ---------------- | -------------------------------------------------------------------------------------------------- |
+| MedQA            | MIT licence                                                                                         |
+| VQA-Med-2019     | CC BY 4.0                                                                                           |
+| RadImageNet-VQA  | Gated on Hugging Face; research use under the dataset agreement, no redistribution                  |
+| RadBench         | Questions from the harrison-ai repository; images are Radiopaedia cases (CC BY-NC-SA 3.0). Radiopaedia asks AI/ML projects to apply for permission before using its content |
+| RaR, RadioRAG    | Published with the respective papers / provided by the authors                                     |
+| Mamma-MRT, Arm X-ray | Local patient data, not public. Results, reports and logs of these benchmarks contain model output derived from patient reports and must not be shared |
+
+---
+
+## Project structure
+
+```
+main.py                     CLI: runs benchmarks, resume, locks, summary, chart
+evaluate.py                 metrics and reports (also usable stand-alone, see above)
+config.default.yaml         template for config.yaml (server, judge, benchmarks, task settings)
+config/mamma_normalization.yaml   normalisation of the Mamma-MRT vocabulary
+core/                       API client, run directory handling, logging, summary, plot
+loaders/                    one loader per data source (text, vision, Mamma-MRT, Arm X-ray)
+tasks/                      prompts and runners (MCQ, VQA, Mamma-MRT, Arm X-ray)
+scripts/                    compare_models.py, download_radbench_images.py
+tests/                      unit tests with synthetic data (no network, no patient data)
+run.sh                      SLURM job script
+```
+
+---
+
 ## Citations
 
 If you use this framework or the underlying datasets in your work, please cite the original sources.
 
 **Datasets**
 
-- **MedQA**: Jin et al. (2021). *What Disease does this Patient Have? A Large-scale Open Domain Question Answering Dataset from Medical Exams.* Applied Sciences. https://arxiv.org/abs/2009.13081
-- **VQA-Med-2019**: Ben Abacha et al. (2019). *VQA-Med: Overview of the Medical Visual Question Answering Task at ImageCLEF 2019.* CLEF 2019. https://www.imageclef.org/2019/medical/vqa
-- **RadImageNet-VQA**: Butsanets et al. (2025). *RadImageNet-VQA.* https://huggingface.co/datasets/raidium/RadImageNet-VQA
-- **RadBench**: Harrison.ai (2024). *RadBench: Benchmarking Large Language Models for Radiology.* https://github.com/harrison-ai/radbench
-- **RaR** (radiology Retrieval and Reasoning; we use its 65 board-exam questions): Wind et al. (2025). npj Digital Medicine. https://www.nature.com/articles/s41746-025-02250-5
-- **RadioRAG**: Tayebi Arasteh et al. (2025). *RadioRAG: Online Retrieval-augmented Generation for Radiology Question Answering.* Radiology: Artificial Intelligence 7(4):e240476. https://github.com/tayebiarasteh/RadioRAG
-- **Arm X-ray**: Kreutzer et al. (2025). European Radiology. https://doi.org/10.1007/s00330-025-12102-1
-- **RadGraph** (background for Label Extraction): Jain et al. (2021). NeurIPS 2021. https://physionet.org/content/radgraph/
+- **MedQA**: Jin D, Pan E, Oufattole N, Weng W-H, Fang H, Szolovits P. *What Disease Does This Patient Have? A Large-Scale Open Domain Question Answering Dataset from Medical Exams.* Applied Sciences 11(14):6421, 2021. https://doi.org/10.3390/app11146421
+- **VQA-Med-2019**: Ben Abacha A, Hasan SA, Datla VV, Liu J, Demner-Fushman D, Müller H. *VQA-Med: Overview of the Medical Visual Question Answering Task at ImageCLEF 2019.* CLEF 2019 Working Notes, CEUR-WS Vol-2380, 2019. https://ceur-ws.org/Vol-2380/paper_272.pdf
+- **RadImageNet-VQA**: Butsanets et al. *RadImageNet-VQA: A Large-Scale CT and MRI Dataset for Radiologic Visual Question Answering.* 2025. https://arxiv.org/abs/2512.17396
+- **RadBench**: harrison.ai. *RadBench: Radiology Benchmark Framework.* 2024. https://github.com/harrison-ai/radbench
+- **RaR** (we use its 65 board-exam questions): Wind S, Sopa J, Truhn D, et al. *Multi-step retrieval and reasoning improves radiology question answering with large language models.* npj Digital Medicine 8:790, 2025. https://doi.org/10.1038/s41746-025-02250-5
+- **RadioRAG**: Tayebi Arasteh S, et al. *RadioRAG: Online Retrieval-augmented Generation for Radiology Question Answering.* Radiology: Artificial Intelligence 7(4):e240476, 2025. https://doi.org/10.1148/ryai.240476
+- **Arm X-ray**: Kreutzer H, et al. European Radiology 36(4):2646–2657 (published online 2025). https://doi.org/10.1007/s00330-025-12102-1
 
-**Evaluation Methodology**
+**Evaluation methodology**
 
-- **WBSS**: Hasan et al. (2018). *Overview of ImageCLEF 2018 Medical Domain Visual Question Answering Task.* CLEF 2018.
-- **LLM-as-a-Judge**: Zheng et al. (2023). *Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena.* NeurIPS 2023. https://arxiv.org/abs/2306.05685
+- **WBSS**: Hasan SA, Ling Y, Farri O, Liu J, Müller H, Lungren M. *Overview of ImageCLEF 2018 Medical Domain Visual Question Answering Task.* CLEF 2018 Working Notes, CEUR-WS Vol-2125, 2018. https://ceur-ws.org/Vol-2125/paper_212.pdf
+- **LLM-as-a-Judge**: Zheng L, et al. *Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena.* NeurIPS 2023 Datasets and Benchmarks. https://arxiv.org/abs/2306.05685

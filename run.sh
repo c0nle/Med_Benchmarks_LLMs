@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SLURM settings for the RWTH CLAIX cluster (project rwth1954); adapt account,
+# partition and GPU request for other sites, or run main.py directly without SLURM.
 #SBATCH --account=rwth1954
 #SBATCH --job-name=med_bench
 #SBATCH --output=results/slurm_%j.out

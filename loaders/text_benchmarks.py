@@ -8,7 +8,6 @@ from pathlib import Path
 
 _MEDQA_PATH       = Path("data/medqa-test.parquet")
 _RAR_PATH         = Path("data/RaR_dataset_WithAnswer.csv")
-_EXTRACTION_PATH  = Path("data/extraction.parquet")
 _RADIORAG_PATH    = Path("data/RadioRAG_WithOptions_WithAnswer.csv")
 
 
@@ -22,7 +21,7 @@ def _load_local_parquet(path: str) -> list:
 
     parquet_path = Path(path)
     if not parquet_path.exists():
-        raise FileNotFoundError(f"Datei nicht gefunden: {path}")
+        raise FileNotFoundError(f"File not found: {path}")
 
     try:
         from PIL import Image as _PILImage
@@ -75,7 +74,7 @@ def _load_local_file(path: str) -> list:
     """Dispatch to CSV or parquet loader based on file extension."""
     p = Path(path)
     if not p.exists():
-        raise FileNotFoundError(f"Datei nicht gefunden: {path}")
+        raise FileNotFoundError(f"File not found: {path}")
     if p.suffix.lower() == ".csv":
         return _load_local_csv(path)
     return _load_local_parquet(path)
@@ -111,13 +110,13 @@ def load_medqa(limit=None):
     Loads MedQA (USMLE) from data/medqa-test.parquet.
     Download: https://huggingface.co/datasets/openlifescienceai/medqa
     """
-    print("--- Lade MedQA (USMLE) ---")
+    print("--- Loading MedQA (USMLE) ---")
 
     if not _MEDQA_PATH.exists():
         raise FileNotFoundError(
-            f"MedQA nicht gefunden: {_MEDQA_PATH}\n"
+            f"MedQA not found: {_MEDQA_PATH}\n"
             "Download: https://huggingface.co/datasets/openlifescienceai/medqa\n"
-            "Datei ablegen als: data/medqa-test.parquet"
+            "Place the file at: data/medqa-test.parquet"
         )
 
     items = _load_local_parquet(str(_MEDQA_PATH))
@@ -158,89 +157,20 @@ def load_rar(limit=None):
     Columns: question_number, question, option_A..option_E, solution_index
     Dataset not public — contact authors: https://www.nature.com/articles/s41746-025-02250-5
     """
-    print("--- Lade RaR (radiology Retrieval and Reasoning; board-exam questions) ---")
+    print("--- Loading RaR (board-exam questions from Wind et al. 2025) ---")
 
     if not _RAR_PATH.exists():
         raise FileNotFoundError(
-            f"RaR nicht gefunden: {_RAR_PATH}\n"
-            "Dataset nicht öffentlich — Autoren kontaktieren:\n"
-            "https://www.nature.com/articles/s41746-025-02250-5\n"
-            "Datei ablegen als: data/RaR_dataset_WithAnswer.csv"
+            f"RaR not found: {_RAR_PATH}\n"
+            "The 65 questions are in Supplementary Note 5 of Wind et al. 2025:\n"
+            "https://doi.org/10.1038/s41746-025-02250-5\n"
+            "Place the file at: data/RaR_dataset_WithAnswer.csv"
         )
 
     items = _load_local_csv(str(_RAR_PATH))
     if limit:
         items = items[:limit]
     return [_format_rar_item(item, idx) for idx, item in enumerate(items)]
-
-
-# ---------------------------------------------------------------------------
-# Label Extraction (NER)  →  data/extraction.parquet
-# ---------------------------------------------------------------------------
-
-def _format_extraction_item(item: dict, idx: int) -> dict:
-    entities_raw = item.get("entities") or item.get("labels") or item.get("ner_tags") or []
-    if isinstance(entities_raw, list):
-        entities_str = ", ".join(str(e) for e in entities_raw if e and str(e) not in {"O", "0"})
-    else:
-        entities_str = str(entities_raw)
-
-    text = (
-        item.get("text")
-        or item.get("report")
-        or item.get("findings")
-        or item.get("impression")
-        or item.get("sentence")
-        or ""
-    )
-
-    return {
-        "id": str(item.get("id") or f"extraction-{idx}"),
-        "benchmark": "LabelExtraction",
-        "text": text,
-        "entities": entities_str,
-        "meta": {
-            "source": item.get("source", ""),
-            "category": item.get("category") or item.get("label_type") or "",
-        },
-    }
-
-
-def load_label_extraction(limit=None):
-    """
-    Loads radiology NER data from data/extraction.parquet.
-    Also accepts data/extraction.csv.
-
-    Required columns: "text" (report text), "entities" (comma-separated reference entities)
-    Recommended source: RadGraph (https://physionet.org/content/radgraph/)
-    """
-    print("--- Lade Label Extraction (Medizinische Entitäten aus Befundtexten) ---")
-
-    path = _EXTRACTION_PATH
-    if not path.exists():
-        csv_path = path.with_suffix(".csv")
-        if csv_path.exists():
-            path = csv_path
-        else:
-            raise FileNotFoundError(
-                f"Label Extraction Dataset nicht gefunden: {_EXTRACTION_PATH}\n"
-                "Empfohlene Quelle: RadGraph (https://physionet.org/content/radgraph/)\n"
-                "Datei ablegen als: data/extraction.parquet  (oder .csv)\n"
-                "Benötigte Spalten: 'text' (Befundtext), 'entities' (kommaseparierte Entitäten)"
-            )
-
-    raw_items = _load_local_file(str(path))
-
-    text_items = [
-        (idx, item) for idx, item in enumerate(raw_items)
-        if str(item.get("text") or item.get("report") or item.get("findings")
-           or item.get("impression") or item.get("sentence") or "").strip()
-    ]
-
-    if limit:
-        text_items = text_items[:limit]
-
-    return [_format_extraction_item(item, idx) for idx, item in text_items]
 
 
 # ---------------------------------------------------------------------------
@@ -279,14 +209,14 @@ def load_radiorag(limit=None):
     Columns: q number, question, option 1..4, answer index (1-based)
     Dataset not public — contact authors: https://github.com/tayebiarasteh/RadioRAG
     """
-    print("--- Lade RadioRAG (Radiology MCQ) ---")
+    print("--- Loading RadioRAG (4-option version) ---")
 
     if not _RADIORAG_PATH.exists():
         raise FileNotFoundError(
-            f"RadioRAG nicht gefunden: {_RADIORAG_PATH}\n"
-            "Dataset nicht öffentlich — Autoren kontaktieren:\n"
-            "https://github.com/tayebiarasteh/RadioRAG\n"
-            "Datei ablegen als: data/RadioRAG_WithOptions_WithAnswer.csv"
+            f"RadioRAG not found: {_RADIORAG_PATH}\n"
+            "The 4-option version (Wind et al. 2025) is available from the authors;\n"
+            "the open-ended questions are in the appendix of https://doi.org/10.1148/ryai.240476\n"
+            "Place the file at: data/RadioRAG_WithOptions_WithAnswer.csv"
         )
 
     items = _load_local_csv(str(_RADIORAG_PATH))

@@ -1,5 +1,5 @@
 """
-Tests for the review fixes of the Mamma-MRT / Arm X-ray label-extraction benchmarks
+Tests for the Mamma-MRT / Arm X-ray label-extraction benchmarks
 (concurrent runner, resume, last_meta columns, sensitivity analyses, Arm metrics, CLI).
 
 Synthetic data only – no patient reports.
@@ -256,11 +256,10 @@ def test_arm_parse_error_scored_as_no_extraction(tmp_path):
 
 def test_arm_missing_labels_scored_as_negative(tmp_path):
     gt = {"Fracture": 1, "Ossicles": 0}
-    new_fmt = _arm_row("c1", gt, {"Fracture": None, "Ossicles": False})
-    # old format: missing label stored as False, detected from the raw answer
-    old_fmt = _arm_row("c2", gt, {"Fracture": False, "Ossicles": False},
-                       raw=json.dumps({"Ossicles": {"finding": False, "citation": ""}}))
-    r, rows = _arm_eval(tmp_path, [new_fmt, old_fmt])
+    # the task stores a label left out of the answer as finding=null
+    rows_in = [_arm_row("c1", gt, {"Fracture": None, "Ossicles": False}),
+               _arm_row("c2", gt, {"Ossicles": False})]
+    r, rows = _arm_eval(tmp_path, rows_in)
     assert r["n_missing_labels"] == 2
     row = next(x for x in rows if x["metric"] == "n_missing_labels")
     assert row["n_missing_labels_gt_positive"] == 2
@@ -281,7 +280,7 @@ def test_arm_secondary_metrics_and_verbatim_split(tmp_path):
     r, out = _arm_eval(tmp_path, rows)
     assert r["all_negative_baseline_accuracy_pct"] == 75.0
     assert r["accuracy_pct"] == 87.5
-    assert r["verbatim_citation_rate_pct"] == r["citation_match_pct"] == round(2 / 3 * 100, 2)
+    assert r["verbatim_citation_rate_pct"] == round(2 / 3 * 100, 2)
     assert r["verbatim_rate_true_positive_pct"] == 100.0
     assert r["verbatim_rate_false_positive_pct"] == 0.0
     assert r["n_truncated"] == 1
@@ -291,7 +290,7 @@ def test_arm_secondary_metrics_and_verbatim_split(tmp_path):
                 ("clavicle", "macro_f1_pct")):
         assert by[key]["ci_lo"] <= by[key]["value"] <= by[key]["ci_hi"]
     assert by[(None, "accuracy_pct")]["secondary"] is True
-    assert "deprecated" in by[(None, "citation_match_pct")]["note"]
+    assert (None, "citation_match_pct") not in by
 
 
 def test_arm_mcc_perfect_and_inverse(tmp_path):
@@ -410,7 +409,7 @@ def test_mamma_n_truncated(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Normalisation (D7)
+# Normalisation
 # ---------------------------------------------------------------------------
 
 def test_lymph_node_metastasis_not_benign_node():
@@ -428,7 +427,7 @@ def test_no_malignant_variant_maps_to_benign_type():
 
 
 # ---------------------------------------------------------------------------
-# CLI reads task_settings (D10)
+# CLI reads task_settings
 # ---------------------------------------------------------------------------
 
 def test_cli_reads_config(tmp_path, monkeypatch):

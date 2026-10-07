@@ -1,22 +1,21 @@
 """
-Arm-Röntgen Label Extraction Task Runner.
-(Kreutzer et al., Eur Radiol 2025)
+Arm X-ray label-extraction task runner (data: Kreutzer et al., Eur Radiol 2025).
 
-Das Modell erhält einen (deutschsprachigen) Radiologiebericht und soll für jedes Label
-angeben, ob es vorhanden ist, mit Zitatbeleg.
+The model receives a German radiology report and states for every label whether the
+finding is present, with a supporting verbatim citation.
 
-Output-Schema:
+Output schema:
 {
-  "Label Name": {"finding": true|false, "citation": "<Zitat aus Bericht>"},
+  "Label Name": {"finding": true|false, "citation": "<quote from the report>"},
   ...
 }
 
-Results-CSV-Spalten:
+Results CSV columns:
     id, benchmark, region, phase, gt_labels_json, model_raw, model_labels_json, parse_error,
     citation_check_json, finish_reason, completion_tokens
 
 model_labels_json: {label: {"finding": true|false|null, "citation": str}}; null = the label
-is missing in the model answer (scored as missing, not as negative).
+is missing in the model answer (counted in n_missing_labels and scored as negative).
 citation_check_json: {label: bool} for every label the model marked present with a
 citation: True if the citation occurs verbatim in the report (checked at run time,
 because the report text is not stored).
@@ -117,8 +116,8 @@ def _as_bool(value) -> bool:
 
 def _parse_response(raw: str, template_labels: list) -> tuple[dict, bool]:
     """
-    Parst JSON-Antwort des Modells.
-    Normalisiert auf template_labels; gibt (parsed_dict, parse_error) zurück.
+    Parse the model's JSON answer and normalise it to template_labels.
+    Returns (parsed_dict, parse_error).
     """
     if not raw or raw.startswith("Error:"):
         return {}, True

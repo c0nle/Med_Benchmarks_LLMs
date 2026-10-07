@@ -3,11 +3,11 @@ Download the Radiopaedia images referenced by data/radbench.csv into the RadBenc
 image cache (data/radbench_images_v2/) used by loaders/vision_benchmarks.py.
 
 Each image is stored as sha1(reference)[:16] + original extension, so different URLs
-never share a file (the old cache used the last URL segment, and 4 URLs end in
+never share a file (the last URL segment is not unique: 4 URLs end in
 "0._jumbo.jpeg"). A manifest CSV (reference, kind, file, sha256, bytes, status) is
 written next to the images.
 
-Only http(s) references are downloaded. MedPix UUIDs (MedPix API no longer available)
+Only http(s) references are downloaded. MedPix UUIDs (MedPix is currently offline)
 and bare ids such as "52662257" (case 77654) are listed in the manifest as
 "not_downloadable"; the loader drops those questions and reports them.
 

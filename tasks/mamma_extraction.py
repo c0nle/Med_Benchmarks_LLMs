@@ -1,10 +1,10 @@
 """
-Mamma-MRT Label Extraction Task Runner.
+Mamma-MRT label-extraction task runner.
 
-Das Modell erhält einen deutschen Befundtext und soll strukturierte Labels
-als JSON zurückgeben.
+The model receives a German breast MRI report and returns structured labels as JSON
+(the prompt is German, see _build_prompt).
 
-Output-Schema des Modells:
+Output schema expected from the model:
 {
   "menopause": "prä" | "post" | "peri" | null,
   "links": {
@@ -15,7 +15,7 @@ Output-Schema des Modells:
   "rechts": { ... }
 }
 
-Results-CSV-Spalten:
+Results CSV columns:
     id, benchmark,
     gt_menopause, gt_birads_li, gt_birads_re, gt_acr_li, gt_acr_re,
     gt_lesions_li, gt_lesions_re,
@@ -91,14 +91,14 @@ def _build_prompt(text: str) -> str:
 
 def _parse_response(raw: str) -> tuple[dict, bool]:
     """
-    Parst JSON-Antwort des Modells.
-    Gibt (parsed_dict, parse_error: bool) zurück.
+    Parse the model's JSON answer.
+    Returns (parsed_dict, parse_error: bool).
     """
     if not raw or raw.startswith("Error:"):
         return {}, True
 
     text = raw.strip()
-    # Markdown-Codeblock entfernen
+    # Strip a Markdown code fence
     if text.startswith("```"):
         lines = text.splitlines()
         inner = lines[1:-1] if lines and lines[-1].strip() == "```" else lines[1:]
@@ -117,7 +117,7 @@ def _parse_response(raw: str) -> tuple[dict, bool]:
 
 
 def _extract_side(parsed: dict, side_key: str):
-    """Extrahiert birads, acr, lesionen für eine Seite aus dem geparsten Dict."""
+    """Extract birads, acr and lesionen of one side from the parsed dict."""
     side = parsed.get(side_key)
     if not isinstance(side, dict):
         return None, None, []

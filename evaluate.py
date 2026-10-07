@@ -1,12 +1,15 @@
 import argparse
 import hashlib
+import json
 import math
+import os
+import random
 import re
 import string
+from collections import Counter
 from functools import lru_cache
+from pathlib import Path
 from typing import Optional
-import json
-import os
 
 import numpy as np
 import pandas as pd
@@ -418,7 +421,6 @@ def _normalise_text(text: str, stem: bool = False) -> str:
     text = text.replace("-", " ").replace("/", " ")
     text = text.translate(str.maketrans("", "", string.punctuation))
     return " ".join(text.split())
-
 
 
 def _exact_match(prediction: str, reference) -> bool:
@@ -1020,315 +1022,11 @@ def print_vqa_terminal_report(results_csv_path: str, report: dict = None) -> Non
 
 
 # ===========================================================================
-# Extraction Evaluation (entity-string micro-F1)
-# ===========================================================================
-
-def _parse_entities(raw: str) -> set:
-    """
-    Parse a comma-separated entity string into a normalised set of tokens.
-    Empty / error strings return an empty set.
-    """
-    if not raw or (isinstance(raw, float) and pd.isna(raw)):
-        return set()
-    raw = str(raw)
-    if raw.startswith("Error:"):
-        return set()
-    entities = {_normalise_text(e) for e in raw.split(",") if e.strip()}
-    return {e for e in entities if e}
-
-
-def score_extraction(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Compute per-item TP/FP/FN for entity extraction (exact match of normalised
-    entity strings). Micro-F1 is computed globally in write_extraction_report_jsonl.
-    Per-item columns added: tp, fp, fn (for aggregation).
-    """
-    df = df.copy()
-    tps, fps, fns = [], [], []
-    for _, row in df.iterrows():
-        ref = _parse_entities(row.get("reference_entities", ""))
-        pred = _parse_entities(row.get("model_entities", ""))
-        tp = len(ref & pred)
-        fp = len(pred - ref)
-        fn = len(ref - pred)
-        tps.append(tp)
-        fps.append(fp)
-        fns.append(fn)
-    df["tp"] = tps
-    df["fp"] = fps
-    df["fn"] = fns
-    return df
-
-
-def _micro_prf(scored_df: pd.DataFrame):
-    """Compute global micro precision, recall, F1 from per-item TP/FP/FN."""
-    total_tp = scored_df["tp"].sum()
-    total_fp = scored_df["fp"].sum()
-    total_fn = scored_df["fn"].sum()
-    p = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0.0
-    r = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0.0
-    f = 2 * p * r / (p + r) if (p + r) > 0 else 0.0
-    return round(p * 100, 2), round(r * 100, 2), round(f * 100, 2)
-
-
-def write_extraction_report_jsonl(
-    results_csv_path: str,
-    out_path: str,
-    logger=None,
-) -> dict:
-    """
-    Evaluate label extraction results with entity-string micro-F1: TP/FP/FN of
-    normalised comma-separated entity strings, summed over all texts before computing
-    precision/recall. This is not the RadGraph entity/relation protocol.
-    """
-    df = _read_results_csv(results_csv_path)
-    scored = score_extraction(df)
-    micro_p, micro_r, micro_f1 = _micro_prf(scored)
-
-    with open(out_path, "w", encoding="utf-8") as f:
-        for metric, value in [
-            ("rows", len(scored)),
-            ("micro_precision_pct", micro_p),
-            ("micro_recall_pct", micro_r),
-            ("micro_f1_pct", micro_f1),
-        ]:
-            _write_jsonl_row(f, {"type": "metric", "metric": metric, "value": value})
-
-        for _, row in scored.iterrows():
-            obj = {"type": "item"}
-            obj.update(row.to_dict())
-            _write_jsonl_row(f, obj)
-
-    if logger:
-        logger.verbose("\n--- Extraction Evaluation ---")
-        logger.verbose(f"Micro F1: {micro_f1:.2f}%  P: {micro_p:.2f}%  R: {micro_r:.2f}%  ({len(scored)} texts)")
-        # Worst 20 by per-item F1
-        scored["item_f1"] = scored.apply(
-            lambda r: (2 * r["tp"] / (2 * r["tp"] + r["fp"] + r["fn"])) if (2 * r["tp"] + r["fp"] + r["fn"]) > 0 else 0.0,
-            axis=1,
-        )
-        worst = scored.nsmallest(20, "item_f1")
-        logger.verbose(f"  Worst {len(worst)} items by item F1:")
-        for _, row in worst.iterrows():
-            logger.verbose(
-                f"    [{row.get('id')}] f1={row['item_f1']:.3f}  tp={row['tp']}  fp={row['fp']}  fn={row['fn']}\n"
-                f"      Ref: {str(row.get('reference_entities',''))[:80]}\n"
-                f"      Got: {str(row.get('model_entities',''))[:80]}"
-            )
-
-    return {
-        "micro_precision_pct": micro_p,
-        "micro_recall_pct": micro_r,
-        "micro_f1_pct": micro_f1,
-        "path": out_path,
-    }
-
-
-def print_extraction_terminal_report(results_csv_path: str) -> None:
-    df = _read_results_csv(results_csv_path)
-    scored = score_extraction(df)
-    micro_p, micro_r, micro_f1 = _micro_prf(scored)
-    print(f"  Micro F1: {micro_f1:.2f}%  P: {micro_p:.2f}%  R: {micro_r:.2f}%  ({len(scored)} questions)")
-
-
-# ===========================================================================
-# Open-ended QA Evaluation (no task uses it at the moment: RadioRAG runs as MCQ)
-# ===========================================================================
-
-def write_open_qa_report_jsonl(
-    results_csv_path: str,
-    out_path: str,
-    client=None,
-    run_judge: bool = False,
-    logger=None,
-    config: Optional[dict] = None,
-) -> dict:
-    """
-    Evaluate open-ended QA results (CSV: id, question, reference_answer, model_answer).
-    WBSS plus, with run_judge=True, binary LLM-as-a-Judge accuracy.
-    """
-    df = _read_results_csv(results_csv_path)
-    scored = score_vqa_open(df)   # adds wbss, exact_match
-
-    judge_model = None
-    if run_judge and client is not None:
-        judge_model = _judge_model_name(client)
-        scored = evaluate_vqa_with_judge(scored, client,
-                                         cache_path=_judge_cache_path(results_csv_path, judge_model),
-                                         workers=_judge_workers(config))
-
-    avg_wbss = float(scored["wbss"].mean() * 100) if len(scored) else 0.0
-
-    result = {
-        "path": out_path,
-        "wbss_pct": round(avg_wbss, 2),
-    }
-
-    with open(out_path, "w", encoding="utf-8") as f:
-        _write_jsonl_row(f, {"type": "metric", "metric": "rows", "value": len(scored)})
-        _write_jsonl_row(f, {"type": "metric", "metric": "wbss_pct", "value": round(avg_wbss, 2)})
-
-        if "judge_correct" in scored.columns:
-            js = _judge_summary(scored)
-            result["n_judge_unparsed"] = js["n_judge_unparsed"]
-            result["n_judge_errors"] = js["n_judge_errors"]
-            if "judge_accuracy_pct" in js:
-                result["judge_accuracy_pct"] = js["judge_accuracy_pct"]
-            _write_jsonl_row(f, {
-                "type": "metric",
-                "metric": "llm_judge_accuracy_pct",
-                **_rate_fields(scored["judge_correct"].astype(float), _clusters_of(scored)),
-                "judge_model": judge_model,
-                "n_judged": js["n_judged"],
-                "n_judge_unparsed": js["n_judge_unparsed"],
-                "n_judge_errors": js["n_judge_errors"],
-            })
-
-        for _, row in scored.iterrows():
-            obj = {"type": "item"}
-            obj.update(row.to_dict())
-            _write_jsonl_row(f, obj)
-
-    if logger:
-        logger.verbose("\n--- Open QA Evaluation ---")
-        logger.verbose(
-            f"WBSS: {result['wbss_pct']:.2f}%  ({len(scored)} questions)"
-            + (f"  LLM-Judge: {result.get('judge_accuracy_pct', 0):.2f}%" if "judge_accuracy_pct" in result else "")
-        )
-
-    return result
-
-
-def print_open_qa_terminal_report(results_csv_path: str, report: dict = None) -> None:
-    r = report or {}
-    judge_str = f"  LLM-Judge: {r['judge_accuracy_pct']:.2f}%" if "judge_accuracy_pct" in r else ""
-    print(f"  WBSS: {r.get('wbss_pct', 0):.2f}%{judge_str}")
-
-
-# ===========================================================================
-# CLI entry-point (extended)
-# ===========================================================================
-
-def _load_config() -> dict:
-    import yaml
-    cfg_path = "config.yaml" if os.path.exists("config.yaml") else "config.default.yaml"
-    with open(cfg_path) as _f:
-        return yaml.safe_load(_f) or {}
-
-
-def _load_judge_client_from_config(judge_model: Optional[str] = None, config_path: Optional[str] = None):
-    """
-    Judge client from the config's judge: section, built exactly like in main.py
-    (judge.temperature / max_tokens / seed / extra_body). *config_path* is the
-    --config file (default config.yaml, else config.default.yaml); *judge_model*
-    overrides judge.model_name, e.g. to run a second judge for an agreement
-    analysis (verdicts go to a separate cache file per judge model).
-    """
-    from main import _build_judge_client
-    cfg = _load_eval_config(config_path)
-    if not cfg.get("judge"):
-        raise SystemExit("No 'judge:' section in the config – cannot run LLM-as-a-Judge.")
-    if judge_model:
-        cfg = dict(cfg)
-        cfg["judge"] = dict(cfg["judge"], model_name=judge_model)
-    client = _build_judge_client(cfg)
-    if client is None:
-        raise SystemExit("Could not create the judge client (see warning above).")
-    return client, cfg
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Evaluate benchmark results CSV.")
-    parser.add_argument(
-        "csv",
-        nargs="?",
-        default="results/benchmark_results.csv",
-        help="Path to CSV (default: results/benchmark_results.csv)",
-    )
-    parser.add_argument(
-        "--out",
-        default="results/benchmark_report.jsonl",
-        help="Output JSONL report path (default: results/benchmark_report.jsonl)",
-    )
-    parser.add_argument(
-        "--type",
-        dest="eval_type",
-        choices=["mcq", "vqa", "extraction", "open_qa", "mamma_extraction", "arm_extraction"],
-        default="mcq",
-        help="Evaluation type",
-    )
-    parser.add_argument(
-        "--config",
-        default=None,
-        help="Config for task_settings (mamma_extraction/arm_extraction); "
-             "default: config.yaml, else config.default.yaml.",
-    )
-    parser.add_argument(
-        "--judge",
-        action="store_true",
-        default=False,
-        help="Run LLM-as-a-Judge for open-ended answers (judge: section of config.yaml + live LLM).",
-    )
-    parser.add_argument(
-        "--judge-model",
-        default=None,
-        help="Override judge.model_name (implies --judge); verdicts are cached per judge model.",
-    )
-    args = parser.parse_args()
-    run_judge = args.judge or bool(args.judge_model)
-
-    if args.eval_type == "mcq":
-        report = write_report_jsonl(args.csv, out_path=args.out)
-        print_terminal_report(args.csv)
-        print(f"Wrote: {report['path']}")
-
-    elif args.eval_type == "vqa":
-        client, cfg = _load_judge_client_from_config(args.judge_model, args.config) if run_judge else (None, None)
-        report = write_vqa_report_jsonl(args.csv, out_path=args.out, client=client,
-                                        run_judge=run_judge, config=cfg)
-        print_vqa_terminal_report(args.csv, report=report)
-        print(f"Wrote: {report['path']}")
-
-    elif args.eval_type == "extraction":
-        report = write_extraction_report_jsonl(args.csv, out_path=args.out)
-        print_extraction_terminal_report(args.csv)
-        print(f"Micro F1: {report['micro_f1_pct']:.2f}%")
-        print(f"Wrote: {report['path']}")
-
-    elif args.eval_type == "open_qa":
-        client, cfg = _load_judge_client_from_config(args.judge_model, args.config) if run_judge else (None, None)
-        report = write_open_qa_report_jsonl(args.csv, out_path=args.out, client=client,
-                                            run_judge=run_judge, config=cfg)
-        print_open_qa_terminal_report(args.csv, report=report)
-        print(f"Wrote: {report['path']}")
-
-    elif args.eval_type == "mamma_extraction":
-        report = write_mamma_extraction_report_jsonl(
-            args.csv, out_path=args.out, config=_load_eval_config(args.config))
-        print_mamma_extraction_terminal_report(args.csv, report=report)
-        print(f"Wrote: {report['path']}")
-
-    elif args.eval_type == "arm_extraction":
-        report = write_arm_extraction_report_jsonl(
-            args.csv, out_path=args.out, config=_load_eval_config(args.config))
-        print_arm_extraction_terminal_report(args.csv, report=report)
-        print(f"Wrote: {report['path']}")
-
-
-
-# ===========================================================================
 # Mamma-MRT Label Extraction Evaluation
 # ===========================================================================
 
-import json as _json
-import math as _math
-import random as _random
-import re as _re
-from collections import Counter as _Counter
-from functools import lru_cache as _lru_cache
-from pathlib import Path as _Path
 
-_MAMMA_NORM_PATH = _Path("config/mamma_normalization.yaml")
+_MAMMA_NORM_PATH = Path("config/mamma_normalization.yaml")
 _MAMMA_FIELDS = ["menopause", "birads_li", "birads_re", "acr_li", "acr_re"]
 
 # Sensitivity analyses (always computed next to the configured primary definition).
@@ -1357,18 +1055,18 @@ _ACR_SIDE_NOTE = (
 )
 
 
-@_lru_cache(maxsize=1)
+@lru_cache(maxsize=1)
 def _load_mamma_norm() -> dict:
-    """Lädt Normalisierungs-YAML (gecacht). Gibt leeres Dict bei fehlendem File zurück."""
+    """Normalisation mapping from config/mamma_normalization.yaml (cached); {} if the file is missing."""
     if not _MAMMA_NORM_PATH.exists():
         return {}
-    import yaml as _yaml
+    import yaml
     with open(_MAMMA_NORM_PATH, encoding="utf-8") as f:
-        return _yaml.safe_load(f) or {}
+        return yaml.safe_load(f) or {}
 
 
 def _build_normalizer(mapping: dict) -> dict:
-    """Baut invertierten Dict: variante.lower().strip() → kanonische Form."""
+    """Inverted mapping: variant.lower().strip() → canonical form."""
     inv: dict = {}
     for canonical, variants in (mapping or {}).items():
         key = str(canonical).lower().strip()
@@ -1379,7 +1077,7 @@ def _build_normalizer(mapping: dict) -> dict:
 
 
 def _normalize_val(value, normalizer: dict):
-    """Normalisiert einen Wert via Normalizer-Dict."""
+    """Canonical form of a value (lowercased value if it is not in the mapping); None if empty."""
     if value is None:
         return None
     s = str(value).strip()
@@ -1389,23 +1087,23 @@ def _normalize_val(value, normalizer: dict):
 
 
 def _normalize_birads(value, normalizer: dict, birads6_handling: str = "map_to_5"):
-    """Normalisiert BIRADS; extrahiert führende Ziffer aus Texten wie '6 nachgewiesene...'."""
+    """Canonical BI-RADS category; takes the leading digit of texts such as '6 nachgewiesene ...'."""
     if value is None:
         return None
     s = str(value).strip()
     if not s or s in ("nan", "None", "?", "ERROR"):
         return None
 
-    # Erst über YAML-Mapping normalisieren
+    # Mapping from the normalisation YAML first
     normed = normalizer.get(s.lower())
 
-    # Fallback: führende Ziffer extrahieren (z.B. "4 Suspekt..." → "4")
+    # Fallback: leading digit (e.g. "4 Suspekt..." → "4")
     if normed is None:
-        m = _re.search(r"(?<!\d)([1-6])(?!\d)", s)
+        m = re.search(r"(?<!\d)([1-6])(?!\d)", s)
         if m:
             normed = m.group(1)
         else:
-            # Numerisch direkt?
+            # Plain number?
             try:
                 normed = str(int(float(s)))
             except (ValueError, TypeError):
@@ -1418,9 +1116,8 @@ def _normalize_birads(value, normalizer: dict, birads6_handling: str = "map_to_5
 
 def _normalize_acr(value, normalizer: dict, acr_range: str = "min"):
     """
-    Normalisiert ACR/BPE-Wert.
-    Behandelt Bereiche wie '1 bis 2' per acr_range-Option.
-    Gibt (kanonischer Wert, is_range_error) zurück.
+    Canonical ACR/BPE value. Ranges such as '1 bis 2' are resolved by the acr_range
+    option. Returns (canonical value, is_range_error).
     """
     if value is None:
         return None, False
@@ -1428,8 +1125,8 @@ def _normalize_acr(value, normalizer: dict, acr_range: str = "min"):
     if not s or s in ("nan", "None", "?", "ERROR"):
         return None, False
 
-    # Bereich? z.B. "1 bis 2", "2-3", "1 to 2"
-    m_range = _re.search(r"(?<!\d)([1-4])\s*(?:bis|to|-|–)\s*([1-4])(?!\d)", s, _re.IGNORECASE)
+    # Range, e.g. "1 bis 2", "2-3", "1 to 2"
+    m_range = re.search(r"(?<!\d)([1-4])\s*(?:bis|to|-|–)\s*([1-4])(?!\d)", s, re.IGNORECASE)
     if m_range:
         a, b = int(m_range.group(1)), int(m_range.group(2))
         if acr_range == "min":
@@ -1441,8 +1138,8 @@ def _normalize_acr(value, normalizer: dict, acr_range: str = "min"):
 
     normed = normalizer.get(s.lower())
     if normed is None:
-        # Führende Ziffer extrahieren
-        m = _re.search(r"(?<!\d)([1-4])(?!\d)", s)
+        # Leading digit
+        m = re.search(r"(?<!\d)([1-4])(?!\d)", s)
         if m:
             normed = m.group(1)
         else:
@@ -1455,9 +1152,9 @@ def _normalize_acr(value, normalizer: dict, acr_range: str = "min"):
 
 
 def _multiset_prf(gt_list: list, pred_list: list) -> tuple:
-    """Multiset TP/FP/FN für Läsionslisten."""
-    gt_c   = _Counter(gt_list)
-    pred_c = _Counter(pred_list)
+    """Multiset TP/FP/FN of two lesion lists."""
+    gt_c   = Counter(gt_list)
+    pred_c = Counter(pred_list)
     tp = sum(min(gt_c[k], pred_c.get(k, 0)) for k in gt_c)
     fp = sum(max(0, pred_c[k] - gt_c.get(k, 0)) for k in pred_c)
     fn = sum(max(0, gt_c[k] - pred_c.get(k, 0)) for k in gt_c)
@@ -1465,14 +1162,14 @@ def _multiset_prf(gt_list: list, pred_list: list) -> tuple:
 
 
 def _bootstrap_ci(values: list, n_boot: int = 1000, alpha: float = 0.05) -> tuple:
-    """95%-Bootstrap-CI auf Report-Ebene. Gibt (point, lo, hi) zurück."""
+    """95% bootstrap CI of a mean over reports (seed 42). Returns (point, lo, hi)."""
     if not values:
         return 0.0, 0.0, 0.0
     n = len(values)
     if n == 1:
         v = float(values[0])
         return v, v, v
-    rng = _random.Random(42)
+    rng = random.Random(42)
     boot = sorted(
         sum(values[rng.randint(0, n - 1)] for _ in range(n)) / n
         for _ in range(n_boot)
@@ -1485,13 +1182,13 @@ def _bootstrap_ci(values: list, n_boot: int = 1000, alpha: float = 0.05) -> tupl
 def _bootstrap_micro_prf_ci(counts: list, n_boot: int = 1000, alpha: float = 0.05) -> dict:
     """
     95% CIs for micro precision / recall / F1: resample reports (seed 42), sum their
-    (tp, fp, fn), recompute. Same resamples as _bootstrap_micro_f1_ci.
+    (tp, fp, fn), recompute.
     Returns {"precision": (lo, hi), "recall": (lo, hi), "f1": (lo, hi)} as fractions.
     """
     if not counts:
         return {"precision": (0.0, 0.0), "recall": (0.0, 0.0), "f1": (0.0, 0.0)}
     n = len(counts)
-    rng = _random.Random(42)
+    rng = random.Random(42)
     ps, rs, fs = [], [], []
     for _ in range(n_boot):
         sample = [counts[rng.randint(0, n - 1)] for _ in range(n)]
@@ -1510,18 +1207,8 @@ def _bootstrap_micro_prf_ci(counts: list, n_boot: int = 1000, alpha: float = 0.0
     return out
 
 
-def _bootstrap_micro_f1_ci(counts: list, n_boot: int = 1000, alpha: float = 0.05):
-    """
-    95% CI for micro-F1: resample reports, sum their (tp, fp, fn), recompute micro-F1.
-    Returns (lo, hi) as fractions.
-    """
-    if not counts:
-        return 0.0, 0.0
-    return _bootstrap_micro_prf_ci(counts, n_boot, alpha)["f1"]
-
-
 def _categorical_metrics(y_true: list, y_pred: list) -> dict:
-    """Accuracy, Macro-F1 und Konfusionsmatrix aus zwei parallelen Listen."""
+    """Accuracy, macro-F1 and confusion matrix of two parallel lists."""
     if not y_true:
         return {"accuracy": 0.0, "macro_f1": 0.0, "confusion": {}}
 
@@ -1548,9 +1235,9 @@ def _categorical_metrics(y_true: list, y_pred: list) -> dict:
 
 
 def _normalize_lesion_list(raw_json: str, lesion_norm: dict) -> list:
-    """JSON-String → normalisierte Läsionsliste."""
+    """JSON list string → list of canonical lesion types."""
     try:
-        items = _json.loads(raw_json) if isinstance(raw_json, str) else (raw_json or [])
+        items = json.loads(raw_json) if isinstance(raw_json, str) else (raw_json or [])
     except Exception:
         return []
     if not isinstance(items, list):
@@ -1562,21 +1249,6 @@ def _normalize_lesion_list(raw_json: str, lesion_norm: dict) -> list:
         if normed:
             result.append(normed)
     return result
-
-
-def _load_eval_config(path: str = None) -> dict:
-    """Config for CLI re-evaluation: --config path, else config.yaml, else config.default.yaml."""
-    import os as _os
-    import yaml as _yaml
-    if path is None:
-        path = next((p for p in ("config.yaml", "config.default.yaml") if _os.path.exists(p)), None)
-    if path is None:
-        print("No config.yaml/config.default.yaml found – using default task_settings.")
-        return {}
-    with open(path, encoding="utf-8") as f:
-        cfg = _yaml.safe_load(f) or {}
-    print(f"task_settings from: {path}")
-    return cfg
 
 
 def _truncation_counts(df: pd.DataFrame):
@@ -1612,8 +1284,8 @@ def _score_mamma(df: pd.DataFrame, norms: dict, acr_range: str, birads6_handling
                  gt_empty_fp: bool):
     """Collects per-field and per-lesion-side scoring data for one definition."""
     field_data: dict = {
-        f: {"y_true": [], "y_pred": [], "n_bewertet": 0,
-            "n_ignoriert_nur_EXT": 0, "n_beide_leer": 0, "n_model_missing": 0,
+        f: {"y_true": [], "y_pred": [], "n_scored": 0,
+            "n_gt_empty_model_present": 0, "n_both_empty": 0, "n_model_missing": 0,
             "per_item_correct": []}
         for f in _MAMMA_FIELDS
     }
@@ -1638,24 +1310,24 @@ def _score_mamma(df: pd.DataFrame, norms: dict, acr_range: str, birads6_handling
                 field, row.get(f"model_{field}", ""), norms, acr_range, birads6_handling)
 
             if gt_n is None and ext_n is None:
-                fd["n_beide_leer"] += 1
+                fd["n_both_empty"] += 1
             elif gt_n is None:
-                fd["n_ignoriert_nur_EXT"] += 1
+                fd["n_gt_empty_model_present"] += 1
                 if gt_empty_fp:
                     fd["y_true"].append("__empty__")
                     fd["y_pred"].append(ext_n)
-                    fd["n_bewertet"] += 1
+                    fd["n_scored"] += 1
                     fd["per_item_correct"].append(0)
             elif ext_n is None:
                 fd["y_true"].append(gt_n)
                 fd["y_pred"].append("__missing__")
-                fd["n_bewertet"] += 1
+                fd["n_scored"] += 1
                 fd["n_model_missing"] += 1
                 fd["per_item_correct"].append(0)
             else:
                 fd["y_true"].append(gt_n)
                 fd["y_pred"].append(ext_n)
-                fd["n_bewertet"] += 1
+                fd["n_scored"] += 1
                 fd["per_item_correct"].append(int(gt_n == ext_n))
 
         for side_key in ("lesions_li", "lesions_re"):
@@ -1682,7 +1354,7 @@ def _score_mamma(df: pd.DataFrame, norms: dict, acr_range: str, birads6_handling
                 sd["fn"] += fn
                 sd["n"]  += 1
                 sd["per_item_counts"].append((tp, fp, fn))
-                sd["exact"] += int(_Counter(g) == _Counter(p))
+                sd["exact"] += int(Counter(g) == Counter(p))
     return field_data, lesion_sides
 
 
@@ -1704,7 +1376,7 @@ def _mamma_field_summary(fd: dict) -> dict:
     return {
         "accuracy": _pct(cm_res["accuracy"]), "acc_lo": _pct(acc_lo), "acc_hi": _pct(acc_hi),
         "macro_f1": _pct(cm_res["macro_f1"]),
-        "coverage": _pct((fd["n_bewertet"] - fd["n_model_missing"]) / fd["n_bewertet"]) if scored else None,
+        "coverage": _pct((fd["n_scored"] - fd["n_model_missing"]) / fd["n_scored"]) if scored else None,
         "accuracy_answered": acc_answered, "n_answered": len(answered),
         "confusion": cm_res["confusion"],
     }
@@ -1778,24 +1450,22 @@ def write_mamma_extraction_report_jsonl(
     logger=None,
 ) -> dict:
     """
-    Wertet Mamma-MRT-Extraktions-CSV aus.
+    Evaluate a Mamma-MRT extraction results CSV.
 
-    Config-Optionen (unter task_settings.label_extraction_mamma):
-        acr_interpretation : "bpe" (Standard) | "density"
-        acr_range          : "min" (Standard) | "max" | "error"
-        birads6_handling   : "map_to_5" (Standard) | "keep"
-        gt_empty_ext_present: "ignore" (Standard) | "fp"  – gilt für Felder und Läsions-Seiten
+    Config options (task_settings.label_extraction_mamma):
+        acr_range           : "min" (default) | "max" | "error"
+        birads6_handling    : "map_to_5" (default) | "keep"
+        gt_empty_ext_present: "ignore" (default) | "fp"  – applies to fields and lesion sides
 
     Primary metrics follow the configured definition. Sensitivity analyses are always
     added for the respective other option of birads6_handling (BI-RADS fields) and of
     gt_empty_ext_present (all fields + lesion sides); naming: see _BIRADS6_VARIANTS.
 
-    Metriken pro kategoriales Feld: Accuracy (+CI), Macro-F1, Coverage, Konfusionsmatrix.
-    BPE zusätzlich auf Untersuchungsebene (acr_exam_accuracy_pct).
-    Läsionen pro Seite: Hauptmetrik = Typ-Menge (welche Läsionstypen kommen vor),
-    zusätzlich Anzahl-Sicht (Multiset, eine Zeile pro Läsion); je Micro-P/R/F1 (+CIs),
-    Exact Match.
-    Zähler: n_gesamt, n_bewertet, n_ignoriert_nur_EXT, n_beide_leer, n_parse_error, n_truncated.
+    Metrics per categorical field: accuracy (+CI), macro-F1, coverage, confusion matrix.
+    BPE also at exam level (acr_exam_accuracy_pct).
+    Lesions per side: main metric = set of lesion types (which types occur), plus a
+    count view (multiset, one entry per lesion); micro P/R/F1 (+CIs) and exact match each.
+    Counters: n_total, n_scored, n_gt_empty_model_present, n_both_empty, n_parse_error, n_truncated.
     """
     cfg_raw = {}
     if config:
@@ -1809,7 +1479,7 @@ def write_mamma_extraction_report_jsonl(
     norms = _mamma_norms()
     df = pd.read_csv(results_csv_path, dtype=str).fillna("")
 
-    n_gesamt      = len(df)
+    n_total      = len(df)
     n_parse_error = int((df["parse_error"].str.lower() == "true").sum())
     n_truncated, n_parse_error_truncated = _truncation_counts(df)
 
@@ -1835,7 +1505,7 @@ def write_mamma_extraction_report_jsonl(
 
     acr_exam = _acr_exam_level(df, norms, acr_range)
 
-    # ─── Metriken schreiben ───────────────────────────────────────────────────
+    # ─── Metrics ──────────────────────────────────────────────────────────────
     result: dict = {"path": out_path}
     summaries = {f: _mamma_field_summary(field_data[f]) for f in _MAMMA_FIELDS}
     for field, s in summaries.items():
@@ -1873,33 +1543,32 @@ def write_mamma_extraction_report_jsonl(
             result[f"{side_key}_micro_f1_{ge_tag}_pct"] = ls["f1"]
     if not gt_empty_fp:
         for field in _MAMMA_FIELDS:
-            result[f"{field}_n_ignored_model_values"] = field_data[field]["n_ignoriert_nur_EXT"]
+            result[f"{field}_n_ignored_model_values"] = field_data[field]["n_gt_empty_model_present"]
     if n_truncated is not None:
         result["n_truncated"] = n_truncated
 
     with open(out_path, "w", encoding="utf-8") as f:
         def _w(obj):
-            f.write(_json.dumps(obj, ensure_ascii=False) + "\n")
+            f.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
-        _w({"type": "metric", "metric": "n_gesamt",     "value": n_gesamt})
+        _w({"type": "metric", "metric": "n_total",     "value": n_total})
         _w({"type": "metric", "metric": "n_parse_error","value": n_parse_error})
         _w({"type": "metric", "metric": "n_truncated", "value": n_truncated,
             "n_parse_error_truncated": n_parse_error_truncated,
             "note": ("finish_reason == 'length' (answer cut off at max_tokens)"
-                     if n_truncated is not None else
-                     "finish_reason not recorded (results from an older version)")})
+                     if n_truncated is not None else "finish_reason not recorded")})
 
         for field in _MAMMA_FIELDS:
             fd, s = field_data[field], summaries[field]
-            _w({"type": "metric", "field": field, "metric": "n_bewertet",
-                "value": fd["n_bewertet"]})
-            _w({"type": "metric", "field": field, "metric": "n_ignoriert_nur_EXT",
-                "value": fd["n_ignoriert_nur_EXT"],
+            _w({"type": "metric", "field": field, "metric": "n_scored",
+                "value": fd["n_scored"]})
+            _w({"type": "metric", "field": field, "metric": "n_gt_empty_model_present",
+                "value": fd["n_gt_empty_model_present"],
                 "note": ("GT empty, model gave a value: "
                          + ("scored as wrong (gt_empty_ext_present=fp)" if gt_empty_fp
                             else "not scored (gt_empty_ext_present=ignore)"))})
-            _w({"type": "metric", "field": field, "metric": "n_beide_leer",
-                "value": fd["n_beide_leer"]})
+            _w({"type": "metric", "field": field, "metric": "n_both_empty",
+                "value": fd["n_both_empty"]})
             acc_row = {"type": "metric", "field": field, "metric": "accuracy_pct",
                        "value": s["accuracy"], "ci_lo": s["acc_lo"], "ci_hi": s["acc_hi"]}
             if field.startswith("acr"):
@@ -1951,7 +1620,7 @@ def write_mamma_extraction_report_jsonl(
         for field in ("birads_li", "birads_re"):
             s = b6_summaries[field]
             base = {"type": "metric", "field": field, "variant": b6_variant,
-                    "n_bewertet": b6_fields[field]["n_bewertet"],
+                    "n_scored": b6_fields[field]["n_scored"],
                     "note": f"sensitivity analysis: birads6_handling={b6_alt} "
                             f"(primary: {birads6_handling})"}
             _w({**base, "metric": f"accuracy_{b6_tag}_pct", "value": s["accuracy"],
@@ -1965,7 +1634,7 @@ def write_mamma_extraction_report_jsonl(
         for field in _MAMMA_FIELDS:
             s = ge_summaries[field]
             base = {"type": "metric", "field": field, "variant": ge_variant,
-                    "n_bewertet": ge_fields[field]["n_bewertet"],
+                    "n_scored": ge_fields[field]["n_scored"],
                     "note": f"sensitivity analysis: gt_empty_ext_present="
                             f"{'fp' if ge_alt else 'ignore'} (primary: {gt_empty_mode})"
                             + ("; worst-case bound: empty GT fields are mostly 'not annotated', so "
@@ -1995,14 +1664,14 @@ def write_mamma_extraction_report_jsonl(
             obj = {"type": "item"}
             for col, val in row.to_dict().items():
                 obj[col] = _jsonable(val)
-            f.write(_json.dumps(obj, ensure_ascii=False) + "\n")
+            f.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
     if logger:
         logger.verbose("\n--- Mamma-MRT Extraction Evaluation ---")
-        logger.verbose(f"n_gesamt={n_gesamt}  n_parse_error={n_parse_error}  n_truncated={n_truncated}")
+        logger.verbose(f"n_total={n_total}  n_parse_error={n_parse_error}  n_truncated={n_truncated}")
         for field in _MAMMA_FIELDS:
             s = summaries[field]
-            nb  = field_data[field]["n_bewertet"]
+            nb  = field_data[field]["n_scored"]
             logger.verbose(f"  {field:<12}  acc={s['accuracy']}%  macro_f1={s['macro_f1']}%  "
                            f"coverage={s['coverage']}%  n={nb}")
         logger.verbose(f"  acr_exam      acc={acr_exam['accuracy']}%  n={acr_exam['n_exams']}  "
@@ -2047,7 +1716,7 @@ def print_mamma_extraction_terminal_report(
 
 
 # ===========================================================================
-# Arm-Röntgen Label Extraction Evaluation
+# Arm X-ray Label Extraction Evaluation
 # ===========================================================================
 
 _ARM_ACCURACY_NOTE = (
@@ -2070,7 +1739,7 @@ def _binary_prf(tp: int, fp: int, fn: int):
 def _mcc(tp, fp, fn, tn) -> float:
     """Matthews correlation coefficient; 0.0 if undefined (a marginal is zero)."""
     tp, fp, fn, tn = (float(x) for x in (tp, fp, fn, tn))
-    denom = _math.sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))
+    denom = math.sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))
     return (tp * tn - fp * fn) / denom if denom > 0 else 0.0
 
 
@@ -2095,7 +1764,7 @@ def _arm_aggregate(label_stats: dict) -> dict:
 def _arm_bootstrap(reports: list, keys: list, n_boot: int = 1000, alpha: float = 0.05) -> dict:
     """
     95% CIs for micro-F1, macro-F1 and MCC: resample reports (seed 42, same draws as
-    _bootstrap_micro_f1_ci), recompute from the summed per-label counts.
+    _bootstrap_micro_prf_ci), recompute from the summed per-label counts.
     reports: list of {key: (tp, fp, fn, tn)}. Returns {"micro_f1"|"macro_f1"|"mcc": (lo, hi)}.
     """
     import numpy as _np
@@ -2109,7 +1778,7 @@ def _arm_bootstrap(reports: list, keys: list, n_boot: int = 1000, alpha: float =
         for key, counts in rep.items():
             for c_i in range(4):
                 mats[c_i, r_i, col[key]] = counts[c_i]
-    rng = _random.Random(42)
+    rng = random.Random(42)
     micro, macro, mccs = [], [], []
     for _ in range(n_boot):
         idx = [rng.randint(0, n - 1) for _ in range(n)]
@@ -2127,19 +1796,6 @@ def _arm_bootstrap(reports: list, keys: list, n_boot: int = 1000, alpha: float =
     return out
 
 
-def _arm_missing_from_raw(raw: str, labels: list) -> set:
-    """Labels absent from the raw model answer (for results written before missing
-    labels were stored as finding=null). Empty set if the answer cannot be parsed."""
-    try:
-        from tasks.arm_extraction import _parse_response as _arm_parse
-    except Exception:
-        return set()
-    parsed, err = _arm_parse(raw or "", labels)
-    if err:
-        return set()
-    return {label for label, entry in parsed.items() if entry.get("finding") is None}
-
-
 def write_arm_extraction_report_jsonl(
     results_csv_path: str,
     out_path: str,
@@ -2147,28 +1803,28 @@ def write_arm_extraction_report_jsonl(
     config: dict = None,
 ) -> dict:
     """
-    Wertet Arm-Röntgen-Extraktions-CSV aus.
+    Evaluate an Arm X-ray extraction results CSV.
 
-    Labels werden pro Region geführt ("<region> | <label>"), da gleichnamige
-    Labels (z.B. "Foreign Bodies") in verschiedenen Regionen verschiedene Aufgaben sind.
+    Labels are kept per region ("<region> | <label>"), because labels with the same
+    name (e.g. "Foreign Bodies") are different tasks in different regions.
 
-    Metriken:
-    - F1, Sensitivität, Spezifität, MCC pro Label
-    - Micro-/Macro-F1 und MCC global und pro Region (Macro nur über Labels mit definiertem F1),
-      jeweils mit 95%-Bootstrap-CI (1000 Resamples über Reports, Seed 42)
-    - Accuracy (sekundär; Anteil korrekter Label-Entscheidungen pro Report, gemittelt) und
-      all_negative_baseline_accuracy_pct (gleiche Mittelung, Vorhersage "alles negativ")
-    - verbatim_citation_rate_pct: Anteil der Zitate (finding=true), die wörtlich im Befund
-      stehen (geprüft im Task, Spalte citation_check_json), getrennt nach TP-/FP-Aussagen;
-      citation_match_pct = deprecated alias
-    - Keine Extraktion = "nichts gefunden": eine nicht parsebare Antwort (n_parse_error)
-      und Labels, die in einer Antwort fehlen (n_missing_labels), zählen als negative
-      Vorhersage (FN bei positiver GT, TN sonst) – wie bei Mamma, wo ein fehlender Wert
-      als falsch zählt. Beide Zahlen werden berichtet.
+    Metrics:
+    - F1, sensitivity, specificity, MCC per label
+    - micro-/macro-F1 and MCC overall and per region (macro only over labels with a
+      defined F1), each with a 95% bootstrap CI (1000 resamples over reports, seed 42)
+    - accuracy (secondary; share of correct label decisions per report, averaged) and
+      all_negative_baseline_accuracy_pct (same averaging, prediction "all negative")
+    - verbatim_citation_rate_pct: share of citations (finding=true) that occur verbatim
+      in the report (checked in the task, column citation_check_json), split into
+      true-positive and false-positive calls
+    - No extraction = "nothing found": an unparseable answer (n_parse_error) and labels
+      missing from an answer (n_missing_labels, stored as finding=null) count as negative
+      predictions (FN for a positive GT label, TN otherwise) – as for Mamma, where a
+      missing value counts as wrong. Both counts are reported.
     """
     df = pd.read_csv(results_csv_path, dtype=str).fillna("")
 
-    n_gesamt      = len(df)
+    n_total      = len(df)
     n_parse_error = int((df["parse_error"].str.lower() == "true").sum())
     n_truncated, n_parse_error_truncated = _truncation_counts(df)
     has_citation_col = "citation_check_json" in df.columns
@@ -2189,17 +1845,15 @@ def write_arm_extraction_report_jsonl(
         region = row.get("region", "") or "unknown"
 
         try:
-            gt_labels = _json.loads(row.get("gt_labels_json") or "{}")
+            gt_labels = json.loads(row.get("gt_labels_json") or "{}")
         except Exception:
             gt_labels = {}
         try:
-            model_labels = _json.loads(row.get("model_labels_json") or "{}")
+            model_labels = json.loads(row.get("model_labels_json") or "{}")
         except Exception:
             model_labels = {}
         if not isinstance(model_labels, dict) or is_parse_error:
             model_labels = {}
-        missing_raw = (set() if is_parse_error
-                       else _arm_missing_from_raw(row.get("model_raw", ""), list(gt_labels)))
 
         rep: dict = {}
         row_correct = row_neg = row_scored = row_missing = 0
@@ -2212,7 +1866,7 @@ def write_arm_extraction_report_jsonl(
             gt_bins[label] = gt_bin
             entry = model_labels.get(label)
             finding = entry.get("finding") if isinstance(entry, dict) else None
-            if finding is None or label in missing_raw:
+            if finding is None:
                 if not is_parse_error:       # a label left out of a parsed answer
                     row_missing += 1
                     n_missing_pos += gt_bin
@@ -2242,7 +1896,7 @@ def write_arm_extraction_report_jsonl(
 
         if has_citation_col:
             try:
-                checks = _json.loads(row.get("citation_check_json") or "{}")
+                checks = json.loads(row.get("citation_check_json") or "{}")
             except Exception:
                 checks = {}
             for label, ok in (checks or {}).items():
@@ -2267,7 +1921,7 @@ def write_arm_extraction_report_jsonl(
 
     result: dict = {
         "path":               out_path,
-        "n_gesamt":           n_gesamt,
+        "n_total":           n_total,
         "n_parse_error":      n_parse_error,
         "micro_f1_pct":       _p(overall["micro_f1"]),
         "macro_f1_pct":       _p(overall["macro_f1"]),
@@ -2280,7 +1934,6 @@ def write_arm_extraction_report_jsonl(
         result["n_truncated"] = n_truncated
     if cite_pct is not None:
         result["verbatim_citation_rate_pct"] = cite_pct
-        result["citation_match_pct"] = cite_pct  # deprecated alias (one release)
         for kind, name in (("tp", "verbatim_rate_true_positive_pct"),
                            ("fp", "verbatim_rate_false_positive_pct")):
             if _rate(kind) is not None:
@@ -2301,18 +1954,17 @@ def write_arm_extraction_report_jsonl(
 
     with open(out_path, "w", encoding="utf-8") as f:
         def _w(obj):
-            f.write(_json.dumps(obj, ensure_ascii=False) + "\n")
+            f.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
         ci_note = "CI: bootstrap over reports (1000 resamples, seed 42), recomputed per resample"
-        _w({"type": "metric", "metric": "n_gesamt",      "value": n_gesamt})
+        _w({"type": "metric", "metric": "n_total",      "value": n_total})
         _w({"type": "metric", "metric": "n_parse_error", "value": n_parse_error,
             "note": "reports whose answer could not be parsed; scored as all-negative "
                     "(no extraction = nothing found)"})
         _w({"type": "metric", "metric": "n_truncated", "value": n_truncated,
             "n_parse_error_truncated": n_parse_error_truncated,
             "note": ("finish_reason == 'length' (answer cut off at max_tokens)"
-                     if n_truncated is not None else
-                     "finish_reason not recorded (results from an older version)")})
+                     if n_truncated is not None else "finish_reason not recorded")})
         _w({"type": "metric", "metric": "n_missing_labels", "value": n_missing,
             "n_missing_labels_gt_positive": n_missing_pos,
             "n_reports_with_missing_labels": n_reports_missing,
@@ -2336,9 +1988,6 @@ def write_arm_extraction_report_jsonl(
         _w({"type": "metric", "metric": "verbatim_citation_rate_pct", "value": cite_pct,
             "n_citations": cite["all"][1], "n_present_calls": n_present_calls,
             "note": _VERBATIM_NOTE})
-        _w({"type": "metric", "metric": "citation_match_pct", "value": cite_pct,
-            "n_citations": cite["all"][1],
-            "note": "deprecated alias of verbatim_citation_rate_pct (removed in the next release)"})
         _w({"type": "metric", "metric": "verbatim_rate_true_positive_pct",
             "value": _rate("tp") if has_citation_col else None, "n_citations": cite["tp"][1],
             "note": "verbatim share among citations of true-positive present-calls"})
@@ -2379,12 +2028,12 @@ def write_arm_extraction_report_jsonl(
             obj = {"type": "item"}
             for col, val in row.to_dict().items():
                 obj[col] = _jsonable(val)
-            f.write(_json.dumps(obj, ensure_ascii=False) + "\n")
+            f.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
     if logger:
-        logger.verbose("\n--- Arm-Röntgen Extraction Evaluation ---")
+        logger.verbose("\n--- Arm X-ray Extraction Evaluation ---")
         logger.verbose(
-            f"n={n_gesamt}  parse_err={n_parse_error}  truncated={n_truncated}  "
+            f"n={n_total}  parse_err={n_parse_error}  truncated={n_truncated}  "
             f"missing_labels={n_missing}  "
             f"micro_f1={result['micro_f1_pct']:.1f}%  macro_f1={result['macro_f1_pct']:.1f}%  "
             f"mcc={result['mcc']:.3f}  acc={result['accuracy_pct']:.1f}% "
@@ -2410,13 +2059,112 @@ def print_arm_extraction_terminal_report(
         f"Accuracy (secondary): {r.get('accuracy_pct', '?')}% "
         f"[all-negative: {r.get('all_negative_baseline_accuracy_pct', '?')}%]  "
         f"Verbatim citations: {f'{cite}%' if cite is not None else 'n/a'}  "
-        f"(n={r.get('n_gesamt', '?')}, parse_err={r.get('n_parse_error', '?')}, "
+        f"(n={r.get('n_total', '?')}, parse_err={r.get('n_parse_error', '?')}, "
         f"missing_labels={r.get('n_missing_labels', '?')}, truncated={r.get('n_truncated', 'n/a')})"
     )
     for region in ("clavicle", "elbow", "thumb"):
         if f"{region}_micro_f1_pct" in r:
             print(f"    {region:<9} Micro-F1: {r[f'{region}_micro_f1_pct']}%  "
                   f"Macro-F1: {r[f'{region}_macro_f1_pct']}%  MCC: {r.get(f'{region}_mcc')}")
+
+
+# ===========================================================================
+# Command line
+# ===========================================================================
+
+def _load_eval_config(path: str = None) -> dict:
+    """Config for CLI re-evaluation: --config path, else config.yaml, else config.default.yaml."""
+    import yaml
+    if path is None:
+        path = next((p for p in ("config.yaml", "config.default.yaml") if os.path.exists(p)), None)
+    if path is None:
+        print("No config.yaml/config.default.yaml found – using default task_settings.")
+        return {}
+    with open(path, encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+    print(f"task_settings from: {path}")
+    return cfg
+
+
+def _load_judge_client_from_config(judge_model: Optional[str] = None, config_path: Optional[str] = None):
+    """
+    Judge client from the config's judge: section, built exactly like in main.py
+    (judge.temperature / max_tokens / seed / extra_body). *config_path* is the
+    --config file (default config.yaml, else config.default.yaml); *judge_model*
+    overrides judge.model_name, e.g. to run a second judge for an agreement
+    analysis (verdicts go to a separate cache file per judge model).
+    """
+    from main import _build_judge_client
+    cfg = _load_eval_config(config_path)
+    if not cfg.get("judge"):
+        raise SystemExit("No 'judge:' section in the config – cannot run LLM-as-a-Judge.")
+    if judge_model:
+        cfg = dict(cfg)
+        cfg["judge"] = dict(cfg["judge"], model_name=judge_model)
+    client = _build_judge_client(cfg)
+    if client is None:
+        raise SystemExit("Could not create the judge client (see warning above).")
+    return client, cfg
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Evaluate a benchmark results CSV.")
+    parser.add_argument("csv", help="Results CSV, e.g. results/<run>/medqa_results.csv")
+    parser.add_argument(
+        "--out",
+        default="results/benchmark_report.jsonl",
+        help="Output JSONL report path (default: results/benchmark_report.jsonl)",
+    )
+    parser.add_argument(
+        "--type",
+        dest="eval_type",
+        choices=["mcq", "vqa", "mamma_extraction", "arm_extraction"],
+        default="mcq",
+        help="Evaluation type",
+    )
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Config for task_settings (mamma_extraction/arm_extraction); "
+             "default: config.yaml, else config.default.yaml.",
+    )
+    parser.add_argument(
+        "--judge",
+        action="store_true",
+        default=False,
+        help="Run LLM-as-a-Judge for open-ended answers (judge: section of config.yaml + live LLM).",
+    )
+    parser.add_argument(
+        "--judge-model",
+        default=None,
+        help="Override judge.model_name (implies --judge); verdicts are cached per judge model.",
+    )
+    args = parser.parse_args()
+    run_judge = args.judge or bool(args.judge_model)
+
+    if args.eval_type == "mcq":
+        report = write_report_jsonl(args.csv, out_path=args.out)
+        print_terminal_report(args.csv)
+        print(f"Wrote: {report['path']}")
+
+    elif args.eval_type == "vqa":
+        client, cfg = _load_judge_client_from_config(args.judge_model, args.config) if run_judge else (None, None)
+        report = write_vqa_report_jsonl(args.csv, out_path=args.out, client=client,
+                                        run_judge=run_judge, config=cfg)
+        print_vqa_terminal_report(args.csv, report=report)
+        print(f"Wrote: {report['path']}")
+
+    elif args.eval_type == "mamma_extraction":
+        report = write_mamma_extraction_report_jsonl(
+            args.csv, out_path=args.out, config=_load_eval_config(args.config))
+        print_mamma_extraction_terminal_report(args.csv, report=report)
+        print(f"Wrote: {report['path']}")
+
+    elif args.eval_type == "arm_extraction":
+        report = write_arm_extraction_report_jsonl(
+            args.csv, out_path=args.out, config=_load_eval_config(args.config))
+        print_arm_extraction_terminal_report(args.csv, report=report)
+        print(f"Wrote: {report['path']}")
 
 
 if __name__ == "__main__":

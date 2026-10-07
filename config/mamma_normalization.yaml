@@ -1,6 +1,6 @@
-# Normalisierungs-Mapping für Mamma-MRT Label Extraction
-# Format: kanonische Form → Liste von Eingabe-Varianten (Groß-/Kleinschreibung-ignorierend)
-# Editierbar ohne Code-Änderung.
+# Normalisation mapping for the breast-MRI label extraction (label_extraction_mamma).
+# Format: canonical form → list of input variants (case-insensitive).
+# The German variants are the vocabulary of the reports and the ground truth.
 
 # ─── Menopause ───────────────────────────────────────────────────────────────
 menopause:
@@ -25,8 +25,8 @@ menopause:
     - perimenopause
     - peri-menopausal
 
-# ─── BIRADS (kanonisch = ganzzahliger String) ─────────────────────────────────
-# Nummerische Textvarianten wie "2 Sicher benigne" werden automatisch erkannt.
+# ─── BI-RADS (canonical = integer string) ────────────────────────────────────
+# Numeric text variants such as "2 Sicher benigne" are recognised automatically.
 birads:
   "1":
     - "1"
@@ -69,9 +69,9 @@ birads:
     - gesicherte malignität
     - nachgewiesen maligne
 
-# ─── ACR / BPE (Hintergrundanreicherung, kanonisch = "1"–"4") ────────────────
-# NICHT Brustdichte (die alten GPT-Extraktionen hatten Dichte – das ist falsch).
-# Bereiche wie "1 bis 2" werden per Config-Option (acr_range) behandelt.
+# ─── ACR / BPE (background parenchymal enhancement, canonical = "1"–"4") ─────
+# Not breast density. Ranges such as "1 bis 2" are resolved by the config option
+# task_settings.label_extraction_mamma.acr_range.
 acr:
   "1":
     - "1"
@@ -106,12 +106,12 @@ acr:
     - "acr 4"
     - "acr-4"
 
-# ─── Läsionstypen ─────────────────────────────────────────────────────────────
-# Kanonisch: lowercase. Varianten: alle bekannten Schreibweisen (Groß-/Kleinschreibung
-# und Leerzeichen am Ende werden automatisch normalisiert).
+# ─── Lesion types ─────────────────────────────────────────────────────────────
+# Canonical: lowercase. Variants: all known spellings (case and trailing whitespace
+# are normalised automatically).
 #
-# Mischbefunde (z.B. "ca/dcis") zaehlen als EINE Laesion mit der hoehergradigen
-# Komponente (invasiv > DCIS > benigne), da die GT eine Zeile pro Laesion hat.
+# Mixed findings (e.g. "ca/dcis") count as ONE lesion with the higher-grade component
+# (invasive > DCIS > benign), because the ground truth has one row per lesion.
 lesion_types:
   "invasives karzinom":
     - invasives karzinom

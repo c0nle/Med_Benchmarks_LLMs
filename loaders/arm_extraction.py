@@ -1,41 +1,41 @@
 """
-Arm-Röntgen Label-Extraction Loader.
-(Kreutzer et al., Eur Radiol 2025, https://doi.org/10.1007/s00330-025-12102-1)
+Arm X-ray label-extraction loader
+(data from Kreutzer et al., Eur Radiol 2025, https://doi.org/10.1007/s00330-025-12102-1).
 
-Ordnerstruktur:
+Folder layout:
     data/label_extraction/Label_Extraction_Kilian/Label_Extraction_Kilian/
         clavicle/
-            clavicle_ids_test_lax.csv   – binäre Labels (0/1), Spalte Phase
-            Reports_4o_1609/<id>.txt    – Befundtexte
-            New_template_clavicle.json  – Template (ungültiges JSON, wird repariert)
+            clavicle_ids_test_lax.csv   – binary labels (0/1), column Phase
+            Reports_4o_1609/<id>.txt    – report texts
+            New_template_clavicle.json  – label template (invalid JSON, repaired on load)
         elbow/
             elbow_ids_test_lax.csv
             Reports_4o_1309/<id>.txt
-            New_Template_elbow.json     – valides JSON
+            New_Template_elbow.json     – valid JSON
         thumb/
             thumb_ids_test_lax.csv
             Reports_4o_1309/<id>.txt
-            New_template_thumb.json     – ungültiges JSON, wird repariert
+            New_template_thumb.json     – invalid JSON, repaired on load
 
-Label-Definitionen: Die Templates enthalten nur Label-Namen mit leeren
-{"finding": false, "citation": ""}-Einträgen; im Datenordner gibt es keine
-Annotationsrichtlinien oder Label-Definitionen. Der Prompt enthält daher nur die Namen.
-Die Templates haben mehr Labels als die CSVs (clavicle 26/18, elbow 29/28, thumb 25/23);
-bewertet werden nur die CSV-Labels.
+Label definitions: the templates only contain label names with empty
+{"finding": false, "citation": ""} entries; the data folder has no annotation guidelines
+or label definitions, so the prompt lists the label names only. The templates have more
+labels than the CSVs (clavicle 26/18, elbow 29/28, thumb 25/23); only CSV labels are scored.
 
-ID-Extraktion aus Bildpfad:
-    clavicle : .../ConvertedPNGs/<id>.png         → Dateiname ohne Extension
-    elbow    : .../<id>/ap.png                    → vorletztes Segment
-    thumb    : .../<id>/ap.png                    → vorletztes Segment
+The CSVs reference X-ray image paths; they are only used to derive the report id
+(images are not loaded – this is a text-extraction task):
+    clavicle : .../ConvertedPNGs/<id>.png         → file name without extension
+    elbow    : .../<id>/ap.png                    → parent folder name
+    thumb    : .../<id>/ap.png                    → parent folder name
 
-Item-Schema:
+Item schema:
     id             : "<region>-<report_id>" (str)
     benchmark      : "LabelExtractionArm"
-    text           : Befundtext (str)  – _x000D_ durch Zeilenumbruch ersetzt
+    text           : report text (str); "_x000D_" replaced by a line break
     region         : "clavicle" | "elbow" | "thumb"
     phase          : "train" | "val" | "test"
-    gt_labels      : dict {label_name: int(0|1)}  – nur CSV-Labels
-    template_labels: list[str]  – Reihenfolge aus Template (soweit in CSV vorhanden)
+    gt_labels      : dict {label_name: int(0|1)}  – CSV labels only
+    template_labels: list[str]  – order as in the template (labels present in the CSV)
     meta           : dict {report_id: str, region: str}
 """
 import json
@@ -79,11 +79,11 @@ _NON_LABEL_COLS = frozenset(
 
 
 # ---------------------------------------------------------------------------
-# Interne Hilfsfunktionen
+# Internal helpers
 # ---------------------------------------------------------------------------
 
 def _extract_id(path_str: str, mode: str) -> str:
-    """Extrahiert numerische ID aus Bildpfad."""
+    """Derive the report id from an image path."""
     p = str(path_str).strip()
     if mode == "filename":
         return os.path.splitext(os.path.basename(p))[0]
@@ -96,14 +96,14 @@ def _extract_id(path_str: str, mode: str) -> str:
 
 def _repair_json(text: str) -> str:
     """
-    Repariert bekanntes JSON-Problem: fehlendes Komma vor "Ossicles"-Eintrag.
-    Ändert die Originaldatei NICHT.
+    Repair the known JSON problem in the templates: a missing comma before the
+    "Ossicles" entry. The original file is not changed.
     """
     return re.sub(r"(\})\s*\n(\s*\"Ossicles\")", r"\1,\n\2", text)
 
 
 def _load_template(json_path: Path) -> dict:
-    """Lädt Template-JSON robust; repariert bekannte Syntaxfehler."""
+    """Load a template JSON; repair the known syntax error if needed."""
     with open(json_path, encoding="utf-8") as f:
         content = f.read()
     try:
@@ -113,7 +113,7 @@ def _load_template(json_path: Path) -> dict:
 
 
 def _load_report(reports_dir: Path, report_id: str) -> str:
-    """Lädt Befundtext; ersetzt _x000D_ durch Zeilenumbruch."""
+    """Load a report text; replace "_x000D_" by a line break."""
     path = reports_dir / f"{report_id}.txt"
     if not path.exists():
         return ""
@@ -123,13 +123,13 @@ def _load_report(reports_dir: Path, report_id: str) -> str:
 
 
 def _load_region(region: str, phase_filter: str = "test") -> list:
-    """Lädt alle Items für eine Region."""
+    """Load all items of one region."""
     cfg = _REGION_CFG[region]
     region_dir = _ARM_BASE / region
 
     csv_path = region_dir / cfg["csv"]
     if not csv_path.exists():
-        raise FileNotFoundError(f"CSV nicht gefunden: {csv_path}")
+        raise FileNotFoundError(f"CSV not found: {csv_path}")
 
     df = pd.read_csv(csv_path, dtype=str)
     df["_id"] = df[cfg["id_col"]].apply(lambda x: _extract_id(x, cfg["id_mode"]))
@@ -142,7 +142,7 @@ def _load_region(region: str, phase_filter: str = "test") -> list:
     template_path = region_dir / cfg["template"]
     if template_path.exists():
         template_order = list(_load_template(template_path).keys())
-        # Nur CSV-Labels verwenden (CSV ist autoritativ), aber in Template-Reihenfolge
+        # Only CSV labels are scored (the CSV is authoritative), in template order
         template_labels = [l for l in template_order if l in label_cols]
         if not template_labels:
             template_labels = label_cols
@@ -156,7 +156,7 @@ def _load_region(region: str, phase_filter: str = "test") -> list:
         report_id = str(row["_id"]).strip()
         text = _load_report(reports_dir, report_id)
         if not text:
-            continue  # Reports ohne Text werden übersprungen
+            continue  # reports without text are skipped
 
         gt_labels: dict[str, int] = {}
         for col in template_labels:
@@ -180,25 +180,25 @@ def _load_region(region: str, phase_filter: str = "test") -> list:
 
 
 # ---------------------------------------------------------------------------
-# Öffentlicher Loader
+# Public loader
 # ---------------------------------------------------------------------------
 
 def load_arm_extraction(limit=None, config=None):
     """
-    Lädt Arm-Röntgen Label-Extraction-Daten.
+    Load the Arm X-ray label-extraction data.
 
-    Config-Optionen (unter task_settings.label_extraction_arm):
-        regions : "clavicle" | "elbow" | "thumb" | "all"  (Standard: "all")
-        phase   : "train" | "val" | "test"                 (Standard: "test")
+    Config options (task_settings.label_extraction_arm):
+        regions : "clavicle" | "elbow" | "thumb" | "all"  (default: "all")
+        phase   : "train" | "val" | "test"                 (default: "test")
 
-    Benötigt: data/label_extraction/Label_Extraction_Kilian/Label_Extraction_Kilian/
+    Requires: data/label_extraction/Label_Extraction_Kilian/Label_Extraction_Kilian/
     """
-    print("--- Lade Arm-Röntgen Label Extraction ---")
+    print("--- Loading Arm X-ray label extraction ---")
 
     if not _ARM_BASE.exists():
         raise FileNotFoundError(
-            f"Arm-Datensatz nicht gefunden: {_ARM_BASE}\n"
-            "Erwartet: data/label_extraction/Label_Extraction_Kilian/"
+            f"Arm X-ray data not found: {_ARM_BASE}\n"
+            "Expected: data/label_extraction/Label_Extraction_Kilian/"
             "Label_Extraction_Kilian/"
         )
 
@@ -219,14 +219,14 @@ def load_arm_extraction(limit=None, config=None):
     per_region: list = []
     for region in regions:
         region_items = _load_region(region, phase_filter=phase)
-        print(f"  {region}: {len(region_items)} Reports geladen (phase={phase})")
+        print(f"  {region}: {len(region_items)} reports loaded (phase={phase})")
         per_region.append(region_items)
 
     # Interleave regions so that `limit` keeps all regions represented
     from itertools import chain, zip_longest
     all_items: list = [it for it in chain.from_iterable(zip_longest(*per_region)) if it is not None]
 
-    print(f"  Gesamt: {len(all_items)} Reports")
+    print(f"  Total: {len(all_items)} reports")
 
     if limit:
         all_items = all_items[:limit]

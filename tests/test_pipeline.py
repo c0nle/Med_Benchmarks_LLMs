@@ -21,7 +21,6 @@ from core import run_utils                                              # noqa: 
 from core.client import (ConfigurationError, MedicalLLMClient,          # noqa: E402
                          ServerUnavailableError, DEFAULT_SYSTEM_PROMPT)
 from core.logger import RunLogger                                       # noqa: E402
-from core.progress import format_progress                               # noqa: E402
 from core.summary import flatten_report_rows, merge_metrics, format_metrics_line  # noqa: E402
 
 
@@ -394,7 +393,7 @@ def test_flatten_carries_cis():
          "ci_lo": 60.0, "ci_hi": 80.0},
         {"type": "metric", "field": "lesions_li", "lesion_view": "type", "metric": "micro_f1_pct", "value": 61.0},
         {"type": "metric", "field": "lesions_li", "lesion_view": "count", "metric": "micro_f1_pct", "value": 55.0},
-        {"type": "metric", "metric": "citation_match_pct", "value": None},
+        {"type": "metric", "metric": "macro_f1_pct", "value": None},
         {"type": "region_metric", "region": "elbow", "micro_f1_pct": 90.0},
         {"type": "item", "id": "1", "is_correct": True},
     ]
@@ -405,7 +404,7 @@ def test_flatten_carries_cis():
     assert flat["open_category_plane_accuracy_pct"] == 40.0
     assert flat["birads_li_accuracy_pct_ci_lo"] == 60.0
     assert flat["lesions_li_micro_f1_pct"] == 61.0 and flat["lesions_li_count_micro_f1_pct"] == 55.0
-    assert "citation_match_pct" not in flat and flat["elbow_micro_f1_pct"] == 90.0
+    assert "macro_f1_pct" not in flat and flat["elbow_micro_f1_pct"] == 90.0
 
     merged = merge_metrics({"accuracy_pct": 80.5, "path": "x"}, flat)
     assert merged["accuracy_pct"] == 80.5 and merged["accuracy_pct_ci_hi"] == 85.0 and "path" not in merged
@@ -442,7 +441,7 @@ def test_plot_with_incomplete_benchmark(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Logger, progress, compare script
+# Logger, compare script
 # ---------------------------------------------------------------------------
 
 def test_logger_tees_stderr(tmp_path):
@@ -460,18 +459,11 @@ def test_logger_tees_stderr(tmp_path):
     assert "second session" in text and text.count("=== Run Log") == 2   # append mode
 
 
-def test_progress_line():
-    assert "7.4 q/s" in format_progress(50, 285, 6.8)
-    slow = format_progress(3, 100, 30.0, errors=1)
-    assert "10.0 s/q" in slow and "0.0 q/s" not in slow and "errors: 1" in slow
-    assert "ETA 2:46:30" in format_progress(1, 1000, 10.0)              # ETA > 1 h as h:mm:ss
-
-
 def test_compare_models(tmp_path):
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
     import compare_models as cm
 
-    def make_run(name, model, correct, cite_key):
+    def make_run(name, model, correct):
         d = tmp_path / name
         d.mkdir()
         (d / "run_info_x.json").write_text(json.dumps({"config": {"server": {"model_name": model}}}))
@@ -479,12 +471,12 @@ def test_compare_models(tmp_path):
         lines += [{"type": "item", "id": str(i), "is_correct": bool(c)} for i, c in enumerate(correct)]
         (d / "medqa_report.jsonl").write_text("\n".join(json.dumps(l) for l in lines))
         (d / "label_extraction_arm_report.jsonl").write_text(
-            json.dumps({"type": "metric", "metric": cite_key, "value": 90.0}) + "\n" +
+            json.dumps({"type": "metric", "metric": "verbatim_citation_rate_pct", "value": 90.0}) + "\n" +
             json.dumps({"type": "metric", "metric": "micro_f1_pct", "value": 80.0, "ci_lo": 78.0, "ci_hi": 82.0}))
         return str(d)
 
-    a = make_run("a", "model-a", [1] * 20, "citation_match_pct")
-    b = make_run("b", "model-b", [0] * 10 + [1] * 10, "verbatim_citation_rate_pct")
+    a = make_run("a", "model-a", [1] * 20)
+    b = make_run("b", "model-b", [0] * 10 + [1] * 10)
     out = tmp_path / "out"
     assert cm.main([a, b, "--out-dir", str(out)]) == 0
     comp = pd.read_csv(out / "comparison.csv")

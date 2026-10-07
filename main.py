@@ -36,7 +36,6 @@ def _registry():
     from loaders.text_benchmarks import (
         load_medqa,
         load_rar,
-        load_label_extraction,
         load_radiorag,
     )
     from loaders.vision_benchmarks import (
@@ -52,8 +51,7 @@ def _registry():
         "radbench":               (load_radbench,           "tasks.vqa",               "vqa"),
         "vqa_med_2019":           (load_vqa_med_2019,       "tasks.vqa",               "vqa"),
         "radimagenet_vqa":        (load_radimagenet_vqa,    "tasks.vqa",               "vqa"),
-        "label_extraction":       (load_label_extraction,   "tasks.extraction",        "extraction"),
-        "radiorag":               (load_radiorag,            "tasks.mcq",               "mcq"),
+        "radiorag":               (load_radiorag,           "tasks.mcq",               "mcq"),
         "label_extraction_mamma": (load_mamma_extraction,   "tasks.mamma_extraction",  "mamma_extraction"),
         "label_extraction_arm":   (load_arm_extraction,     "tasks.arm_extraction",    "arm_extraction"),
     }
@@ -74,8 +72,8 @@ def _resolve_benchmarks(config: dict, registry: dict) -> list:
     unknown = [n for n in names if n not in registry]
     if unknown:
         raise ValueError(
-            f"Unbekannte Benchmark(s): {unknown}. "
-            f"Verfügbar: {', '.join(sorted(registry.keys()))}"
+            f"Unknown benchmark(s): {unknown}. "
+            f"Available: {', '.join(sorted(registry.keys()))}"
         )
     return names
 
@@ -128,7 +126,7 @@ def _run_one(benchmark: str, registry: dict, config: dict, client, judge_client,
 
     limit = config.get("benchmark_settings", {}).get("limit_samples", None)
 
-    # Loaders, die config kennen, bekommen sie übergeben (per inspect)
+    # Loaders that accept a config get it passed
     import inspect
     sig = inspect.signature(loader)
     if "config" in sig.parameters:
@@ -144,7 +142,7 @@ def _run_one(benchmark: str, registry: dict, config: dict, client, judge_client,
     report_path  = os.path.join(run_dir, f"{benchmark}_report.jsonl")
     _drop_error_rows(results_path)
 
-    # Per-Task max_tokens-Override
+    # Per-task max_tokens override
     task_settings    = config.get("task_settings", {}).get(benchmark, {})
     orig_max_tokens  = client.max_tokens
     if "max_tokens" in task_settings:
@@ -310,20 +308,6 @@ def _evaluate(benchmark: str, eval_type: str, results_path: str, report_path: st
             print_vqa_terminal_report(results_path, report=report)
             return {k: v for k, v in report.items() if k != "path"}
 
-        elif eval_type == "extraction":
-            from evaluate import write_extraction_report_jsonl, print_extraction_terminal_report
-            report = write_extraction_report_jsonl(results_path, out_path=report_path, logger=logger)
-            print_extraction_terminal_report(results_path)
-            return {"micro_f1_pct": report.get("micro_f1_pct")}
-
-        elif eval_type == "open_qa":
-            from evaluate import write_open_qa_report_jsonl, print_open_qa_terminal_report
-            report = write_open_qa_report_jsonl(results_path, out_path=report_path,
-                                                client=judge_client, run_judge=run_judge, logger=logger,
-                                                config=config)
-            print_open_qa_terminal_report(results_path, report=report)
-            return {k: v for k, v in report.items() if k != "path"}
-
         elif eval_type == "mamma_extraction":
             from evaluate import write_mamma_extraction_report_jsonl, print_mamma_extraction_terminal_report
             report = write_mamma_extraction_report_jsonl(
@@ -377,7 +361,7 @@ def _load_config(args):
     else:
         config_path = "config.yaml" if os.path.exists("config.yaml") else "config.default.yaml"
         if config_path != "config.yaml":
-            print("Hinweis: config.yaml nicht gefunden, nutze config.default.yaml.")
+            print("Note: config.yaml not found, using config.default.yaml.")
     with open(config_path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f) or {}
     if args.model:
@@ -487,7 +471,7 @@ def _main_logged(args, config, config_path, benchmarks, registry, model_name,
         print(f"ERROR: {e}")
         return 2
 
-    info =run_utils.build_run_info(config, benchmarks, args=args, config_path=config_path,
+    info = run_utils.build_run_info(config, benchmarks, args=args, config_path=config_path,
                                     served_models=served_models)
     info["log_file"] = os.path.basename(log_path)
     run_utils.write_run_info(run_dir, info, ts)

@@ -21,8 +21,7 @@ Prompts (user message; the client adds its system prompt):
   MCQ    : "Question about the medical image: …\nOptions: A: …, B: …\nReply with only the correct letter (A/B/…)."
   Yes/No : "Question about the medical image: …\nReply with only 'Yes' or 'No'."
   Open   : "Question: …\nAnswer the question with a single word or a short phrase."
-           (standard short-answer VQA instruction; until 2026-10 the open prompt asked for
-           "key medical terms only", which is not comparable with published VQA results)
+           (standard short-answer VQA instruction)
 """
 import json
 

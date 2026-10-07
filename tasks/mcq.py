@@ -43,8 +43,8 @@ def prepare_results_file(results_path: str, fieldnames: list):
 
     The file is read as text (dtype=str, keep_default_na=False). If it exists but
     cannot be read, an error is raised – re-running everything silently would mix two
-    runs. If it lacks columns of *fieldnames* (results written by an older version),
-    the file is rewritten with these columns added (empty for old rows), so appended
+    runs. If it lacks columns of *fieldnames*, the file is rewritten with these columns
+    added (empty for existing rows), so appended
     rows stay aligned with the header.
     """
     if not (os.path.exists(results_path) and os.path.getsize(results_path) > 0):
@@ -68,7 +68,7 @@ def prepare_results_file(results_path: str, fieldnames: list):
         print(f"  Resume: added columns {missing} to {results_path}")
     completed = set(existing["id"].astype(str).tolist())
     if completed:
-        print(f"Resume: {len(completed)} Fragen bereits vorhanden, überspringe.")
+        print(f"Resume: {len(completed)} items already answered, skipping them.")
     return completed, columns
 
 
@@ -180,7 +180,7 @@ def run_items(config: dict, client, data: list, results_path: str, fieldnames: l
                         logger.verbose(f"[{position[item_id]:>{len(str(total))}}/{total}] {item_id}{tag}  →  {status}")
 
                     if is_error and max_errors is not None and errors >= max_errors and not stop:
-                        print(f"Abbruch: max_errors={max_errors} erreicht.")
+                        print(f"Stopping: max_errors={max_errors} reached.")
                         stop = True
 
                     if processed_new % 50 == 0:
