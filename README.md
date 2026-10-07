@@ -11,7 +11,7 @@ evaluated without data leaving the institution.
 | Benchmark (config name)                  | Type                                         | Requires VLM | Metric(s)                                                       |
 | ---------------------------------------- | -------------------------------------------- | :----------: | --------------------------------------------------------------- |
 | MedQA (`medqa`)                          | Text MCQ (USMLE, 4 options)                  |      —       | Accuracy                                                        |
-| RaR (`rar`)                              | Text MCQ (radiology, 5 options)              |      —       | Accuracy                                                        |
+| RaR (`rar`)                              | Text MCQ (radiology board exam, 5 options)   |      —       | Accuracy                                                        |
 | RadioRAG (`radiorag`)                    | Text MCQ variant (radiology, 4 options)      |      —       | Accuracy                                                        |
 | RadBench (`radbench`)                    | X-ray image VQA (MCQ / yes-no / open)        |      ✅      | MCQ Acc. / Yes-No Acc. / Open: LLM-Judge (+ Exact, WBSS)        |
 | VQA-Med-2019 (`vqa_med_2019`)            | Medical image VQA (open)                     |      ✅      | LLM-Judge, Exact match (+ WBSS); per category                   |
@@ -21,7 +21,8 @@ evaluated without data leaving the institution.
 | Label Extraction (`label_extraction`)    | NER (entity strings)                         |      —       | Entity-string Micro F1 (needs `data/extraction.parquet`, not included) |
 
 > VLM benchmarks always send the image(s), so the model must accept image input.
-> Multi-image RadBench questions send all images of the case; a question is never sent with fewer images.
+> Images are sent losslessly as PNG. Multi-image RadBench questions send all images the question references, in order
+> (its `<i>` markers become `[Image 1]`, `[Image 2]`, …); a question is never sent with fewer images.
 
 ---
 
@@ -82,7 +83,7 @@ Most benchmarks load automatically. A few require manual download:
 | VQA-Med-2019     | Auto (HuggingFace) or [simwit/vqa-med-2019](https://huggingface.co/datasets/simwit/vqa-med-2019)         | `data/vqa_med_2019.parquet`                |
 | RadImageNet-VQA  | [raidium/RadImageNet-VQA](https://huggingface.co/datasets/raidium/RadImageNet-VQA)                       | `data/radimagenet_vqa_benchmark.parquet`   |
 | RadBench         | [harrison-ai/radbench](https://github.com/harrison-ai/radbench); images: `python scripts/download_radbench_images.py` | `data/radbench.csv`, `data/radbench_images_v2/` |
-| RaR              | Contact authors via [paper](https://www.nature.com/articles/s41746-025-02250-5)                          | `data/RaR_dataset_WithAnswer.csv`          |
+| RaR              | Wind et al. 2025, see the [paper](https://www.nature.com/articles/s41746-025-02250-5)'s data availability | `data/RaR_dataset_WithAnswer.csv`          |
 | RadioRAG         | Contact authors via [GitHub](https://github.com/tayebiarasteh/RadioRAG)                                  | `data/RadioRAG_WithOptions_WithAnswer.csv` |
 | Mamma-MRT        | Not public (local patient data)                                                                      | `data/label_extraction/label_extraction_gt.xlsx` (ground truth) + `hiwi_gt_ergaenzung.xlsx` (report texts; its `*_GT` columns are identical to the ground truth and only used as a consistency check) |
 | Arm X-ray        | Not public (local patient data; Kreutzer et al., Eur Radiol 2025)                                    | `data/label_extraction/Label_Extraction_Kilian/` |
@@ -125,7 +126,7 @@ stops (`--skip-health-check` disables this). 401/403/404 stop the run immediatel
 after `max_consecutive_errors` (10) failures in a row the benchmark stops, the remaining ones are skipped, and the run
 is marked INCOMPLETE so it can be resumed.
 
-**Concurrency and locks.** `benchmark_settings.concurrency` (default 4) is the number of parallel requests per
+**Concurrency and locks.** `benchmark_settings.concurrency` (4 in `config.default.yaml`; 1 if the key is missing) is the number of parallel requests per
 benchmark; only one thread writes the results CSV. Two jobs may share a `--run-dir` only for different benchmarks;
 a second job on the same benchmark exits with "already running" (lock file `.<benchmark>.lock`).
 
@@ -149,7 +150,8 @@ benchmark: all                                    # all registered
 
 Available names: `medqa`, `rar`, `radbench`, `vqa_med_2019`, `radimagenet_vqa`, `radiorag`, `label_extraction_mamma`, `label_extraction_arm`, `label_extraction` (needs its own data file, so `all` fails without it)
 
-`limit_samples` takes the first N items of each benchmark (deterministic, not stratified).
+`limit_samples` (a positive number, or `null`/`all`) takes the first N items of each benchmark in file order
+(deterministic, not stratified); for Arm X-ray the regions are interleaved before the cut.
 
 ### Comparing models
 
@@ -204,7 +206,7 @@ python evaluate.py results/<run>/label_extraction_arm_results.csv --type arm_ext
 - Open-ended VQA: "Answer the question with a single word or a short phrase." (before 2026-10 the prompt asked for
   "key medical terms only"; results from older runs are not comparable).
 - Mamma-MRT: German system and user prompt with a JSON schema. BI-RADS is asked as 2–5 by imaging finding, also
-  for an already histologically proven carcinoma (the annotation never uses 6; before 2026-10-07 the prompt offered
+  for an already histologically proven carcinoma (the annotation never uses 6; before 2026-10-06 the prompt offered
   6 = proven malignancy and models used it in staging reports). Arm X-ray: JSON with one entry per label and a
   verbatim citation; the datasets contain no label definitions, so the prompt lists label names only.
 - Default system prompt for public benchmarks: "You are a medical expert in diagnostic imaging. Answer concisely and
@@ -217,11 +219,11 @@ python evaluate.py results/<run>/label_extraction_arm_results.csv --type arm_ext
 | Benchmark        | What it measures                                          | Metric                      | Random baseline | Notes                                        |
 | ---------------- | --------------------------------------------------------- | --------------------------- | :-------------: | -------------------------------------------- |
 | MedQA            | USMLE Step 1–3 clinical reasoning (4-choice MCQ)         | Accuracy                    |       25%       | General medicine knowledge                   |
-| RaR              | Radiology board-style MCQ (5-choice)                      | Accuracy                    |       20%       | Small (n=65) and near ceiling; answer key skewed (C = 27/65) |
+| RaR              | Radiology board-exam MCQ (5-choice)                       | Accuracy                    |       20%       | Small (n=65) and near ceiling; answer key skewed (C = 27/65) |
 | RadioRAG         | Radiology factual QA (4-choice MCQ)                       | Accuracy                    |       25%       | Originally open-ended; converted to MCQ      |
 | RadBench         | X-ray questions with image(s)                             | Accuracy / LLM-Judge        | 1/#options; 50% yes/no | Radiopaedia cases only: 283 questions (63 MCQ, 147 yes/no, 73 open) on 49 cases; 212 MedPix questions dropped (images unavailable); 2 questions of case 77654 dropped (image reference `52662257` is not a URL) |
 | VQA-Med-2019     | Medical image VQA: modality, plane, organ, abnormality    | LLM-Judge / Exact match     |       —         | 500 items (125 per category); official metric: exact-match accuracy |
-| RadImageNet-VQA  | CT/MRI: MCQ (2000), yes/no (5000), open (2000)            | Accuracy / LLM-Judge        |   25% / 50%     | 9K items on 1K images; per content type (anatomy / pathology) |
+| RadImageNet-VQA  | CT/MRI: MCQ (2000), yes/no (5000), open (2000)            | Accuracy / LLM-Judge        |   25% / 50%     | 9K items on 1K images; per content type (anatomy / pathology / pathology_specific) |
 | Mamma-MRT        | Menopause, BI-RADS and BPE ("ACR") per side, lesion types per side | Accuracy, Macro-F1, Micro-F1 | majority class | 302 exams; see definitions below |
 | Arm X-ray        | 18–28 binary findings per region + supporting citation   | Micro/Macro-F1, MCC          | all-negative accuracy | 1371 test reports (clavicle 233, elbow 745, thumb 393) |
 | Label Extraction | Entity strings from radiology reports                     | Micro F1                    |       —       | Not the RadGraph span protocol               |
@@ -233,8 +235,10 @@ python evaluate.py results/<run>/label_extraction_arm_results.csv --type arm_ext
 ### Accuracy
 
 Rule-based letter extraction for MCQ: the last explicit answer statement counts ("answer is X", "Answer: X",
-"Correct Letter: X", then **X**); two letters asserted together or several different letters → unparsed (wrong);
-only the question's option letters are accepted. Yes/No: the first word of the answer must be the expected "yes"/"no".
+"Correct Letter: X", then **X**, then a leading "X."); two letters asserted together or several different letters →
+unparsed (wrong); only the question's option letters are accepted. A lone capital letter in free text is only read as
+the answer in short replies (≤ 40 characters) without negation ("The answer is not A" → unparsed). RadBench answers
+stored as a ranked list ("7,8,6,…") use the first entry as the reference. Yes/No: the first word of the answer must be the expected "yes"/"no".
 Failed API calls count as wrong and are reported as `n_api_errors`.
 
 ### Exact match (open questions)
@@ -246,7 +250,7 @@ several for 32 questions) — the official VQA-Med-2019 accuracy.
 
 Secondary metric from VQA-Med 2018 (Wu-Palmer similarity over WordNet; re-implementation, not the official scorer).
 It is reported together with `wbss_shuffled_baseline_pct` (references permuted, seed 42): unrelated answers already
-score ≈ 37–46%, so WBSS is not used as a headline metric.
+scored ≈ 37–46% on an earlier run, so WBSS is not used as a headline metric.
 
 ### LLM-as-a-Judge
 
@@ -264,11 +268,17 @@ Mamma lesions and Arm labels.
 
 - Fields (menopause, BI-RADS left/right, BPE left/right): Accuracy (95% CI), Macro-F1 over the GT classes and
   coverage (share of scored items where the model gave a value; a missing value is wrong for accuracy but only an FN
-  for macro-F1, so macro-F1 can exceed accuracy). "ACR" in the GT is background parenchymal enhancement (1–4), not
+  for macro-F1, so macro-F1 can exceed accuracy) and `accuracy_when_answered_pct` (accuracy among the items where
+  the model gave a value). For menopause most missing values are exams whose report does not state the status
+  (the annotation took it from elsewhere), so read accuracy together with coverage and accuracy-when-answered. "ACR" in the GT is background parenchymal enhancement (1–4), not
   breast density. BPE is usually one value per exam, so the left/right rows are not independent;
   `acr_exam_accuracy_pct` scores one decision per exam (exams whose GT differs between sides are excluded and counted).
 - Primary definition: BI-RADS 6 is mapped to 5 (`birads6_handling`; the GT has no 6 and the prompt asks for 2–5, so this only catches stray answers) and fields or lesion sides with
-  empty GT are not scored (`gt_empty_ext_present: ignore`). Sensitivity analyses with the other option of each setting
+  empty GT are not scored (`gt_empty_ext_present: ignore`). An empty GT field means "not annotated", not "not in the
+  report": the ground truth is a lesion registry (every exam has ≥ 1 annotated lesion; BI-RADS per side = maximum over
+  that side's lesions), menopause and BPE are empty together in the same 98 exams although 70 resp. 93 of these
+  reports state them, and 153 sides with annotated lesions have no BI-RADS. The `fp` variant is therefore a
+  worst-case bound, not a plausible alternative. Sensitivity analyses with the other option of each setting
   are always reported, using the same metric name with a tag before `_pct` (`birads_li_accuracy_birads6keep_pct`,
   `menopause_accuracy_gtemptyfp_pct`, `lesions_li_micro_f1_gtemptyfp_pct`; JSONL rows carry a `variant` field),
   together with the number of BI-RADS-6 answers and of ignored model values.
@@ -281,8 +291,9 @@ Mamma lesions and Arm labels.
 
 Labels are scored per region (`clavicle | Fracture` ≠ `elbow | Fracture`). Main metrics: micro-/macro-F1 and MCC,
 overall and per region. Macro-F1 averages only labels with at least one positive in GT or prediction. Accuracy is
-secondary because most labels are absent; compare `all_negative_baseline_accuracy_pct`. Unparseable answers are not
-scored (`n_parse_error`); labels missing from an answer are counted as missing (`n_missing_labels`), not as negative.
+secondary because most labels are absent; compare `all_negative_baseline_accuracy_pct`. No extraction counts as
+"nothing found": an unparseable answer (`n_parse_error`) and labels missing from an answer (`n_missing_labels`) are
+scored as negative predictions (FN for a positive label), as Mamma scores a missing value as wrong.
 `verbatim_citation_rate_pct` is the share of citations (for findings marked present) that occur verbatim in the
 report (case/whitespace-insensitive, ≥ 4 characters). It is split into true-positive and false-positive calls,
 because a verbatim quote is not evidence that the finding is correct. It is checked at run time, because the report
@@ -309,8 +320,8 @@ If you use this framework or the underlying datasets in your work, please cite t
 - **VQA-Med-2019**: Ben Abacha et al. (2019). *VQA-Med: Overview of the Medical Visual Question Answering Task at ImageCLEF 2019.* CLEF 2019. https://www.imageclef.org/2019/medical/vqa
 - **RadImageNet-VQA**: Butsanets et al. (2025). *RadImageNet-VQA.* https://huggingface.co/datasets/raidium/RadImageNet-VQA
 - **RadBench**: Harrison.ai (2024). *RadBench: Benchmarking Large Language Models for Radiology.* https://github.com/harrison-ai/radbench
-- **RaR**: Contact authors via https://www.nature.com/articles/s41746-025-02250-5
-- **RadioRAG**: Tayebi Arasteh et al. (2024). *RadioRAG: Factual Large Language Models for Enhanced Diagnostics in Radiology Using Dynamic Retrieval Augmented Generation.* https://github.com/tayebiarasteh/RadioRAG
+- **RaR** (radiology Retrieval and Reasoning; we use its 65 board-exam questions): Wind et al. (2025). npj Digital Medicine. https://www.nature.com/articles/s41746-025-02250-5
+- **RadioRAG**: Tayebi Arasteh et al. (2025). *RadioRAG: Online Retrieval-augmented Generation for Radiology Question Answering.* Radiology: Artificial Intelligence 7(4):e240476. https://github.com/tayebiarasteh/RadioRAG
 - **Arm X-ray**: Kreutzer et al. (2025). European Radiology. https://doi.org/10.1007/s00330-025-12102-1
 - **RadGraph** (background for Label Extraction): Jain et al. (2021). NeurIPS 2021. https://physionet.org/content/radgraph/
 

@@ -124,6 +124,8 @@ _LEADING_RE = re.compile(r"^[\s*(\[]*([A-Z])[*)\]]*\s*(?:[).:\-]|$)")
 _ALSO_RE = re.compile(r"^[*)\]\s]*(?:,|/|&|\+|\band\b|\bor\b)\s*(?:option\s+)?[*(\[]*([A-Za-z])(?![A-Za-z0-9'’])",
                       re.IGNORECASE)
 _PRONOUN_I_RE = re.compile(r"^\s*(?:think|believe|would|am|choose|will|'d|'m|’d|’m)\b", re.IGNORECASE)
+_NEGATION_RE = re.compile(r"\b(?:not|none|neither|nor|no|cannot|can't)\b", re.IGNORECASE)
+_FALLBACK_MAX_CHARS = 40
 
 
 def _second_letter(text: str, pos: int, first: str, keys: str) -> bool:
@@ -152,8 +154,9 @@ def extract_choice(value, valid_keys: str = "ABCDE") -> Optional[str]:
          answer is a fracture");
       3. bold letters "**X**" (last one counts);
       4. a leading letter ("B. Pneumothorax", "C) ...");
-      5. otherwise the standalone capital option letters in the text, but only if
-         exactly one distinct letter occurs ("A and B", "Curve C/D/E" → None).
+      5. otherwise, for short replies (≤ 40 characters) without a negation, the
+         standalone capital option letters, but only if exactly one distinct letter
+         occurs ("A and B", "Curve C/D/E", "The answer is not A" → None).
     Two letters asserted together ("answer is A and B", "Both A and C") → None.
     A letter outside *valid_keys* is never returned.
     """
@@ -198,6 +201,11 @@ def extract_choice(value, valid_keys: str = "ABCDE") -> Optional[str]:
         if not (m.group(1) == "I" and _PRONOUN_I_RE.match(text[m.end(1):])):
             return m.group(1)
 
+    # Last resort only for short replies without negation: in longer free text a lone
+    # capital letter is not a stated answer ("Comparing the options: **A:** …" cut off,
+    # "The answer is not A").
+    if len(text) > _FALLBACK_MAX_CHARS or _NEGATION_RE.search(text):
+        return None
     candidates = set()
     for m in re.finditer(r"(?<![A-Za-z'’])([A-Z])(?![A-Za-z'’])", text):
         c = m.group(1)
@@ -1683,6 +1691,11 @@ def _mamma_field_summary(fd: dict) -> dict:
     cm_res = _categorical_metrics(yt, yp)
     scored = bool(yt)
     _, acc_lo, acc_hi = _bootstrap_ci(fd["per_item_correct"])
+    # accuracy among the items where the model gave a value (missing values left out):
+    # separates "wrong value" from "no value" (e.g. menopause not stated in the report)
+    answered = [(t, p) for t, p in zip(yt, yp) if p != "__missing__" and t != "__empty__"]
+    acc_answered = (round(sum(t == p for t, p in answered) / len(answered) * 100, 2)
+                    if answered else None)
 
     def _pct(x):
         # Nothing to score → undefined (None), not 0%
@@ -1692,6 +1705,7 @@ def _mamma_field_summary(fd: dict) -> dict:
         "accuracy": _pct(cm_res["accuracy"]), "acc_lo": _pct(acc_lo), "acc_hi": _pct(acc_hi),
         "macro_f1": _pct(cm_res["macro_f1"]),
         "coverage": _pct((fd["n_bewertet"] - fd["n_model_missing"]) / fd["n_bewertet"]) if scored else None,
+        "accuracy_answered": acc_answered, "n_answered": len(answered),
         "confusion": cm_res["confusion"],
     }
 
@@ -1713,7 +1727,7 @@ def _mamma_lesion_summary(sd: dict) -> dict:
         "recall": _pct(micro_r), "recall_ci": tuple(_pct(v) for v in cis["recall"]),
         "f1": _pct(micro_f1), "f1_ci": tuple(_pct(v) for v in cis["f1"]),
         "f1_raw": micro_f1,
-        "exact": round(sd["exact"] / sd["n"] * 100, 2) if sd["n"] > 0 else 0.0,
+        "exact": round(sd["exact"] / sd["n"] * 100, 2) if sd["n"] > 0 else None,
     }
 
 
@@ -1838,6 +1852,8 @@ def write_mamma_extraction_report_jsonl(
     for field, s in summaries.items():
         if s["coverage"] is not None:
             result[f"{field}_coverage_pct"] = s["coverage"]
+        if s["accuracy_answered"] is not None:
+            result[f"{field}_accuracy_when_answered_pct"] = s["accuracy_answered"]
     if acr_exam["accuracy"] is not None:
         result["acr_exam_accuracy_pct"] = acr_exam["accuracy"]
     b6_summaries = {f: _mamma_field_summary(b6_fields[f]) for f in ("birads_li", "birads_re")}
@@ -1894,6 +1910,9 @@ def write_mamma_extraction_report_jsonl(
             _w({"type": "metric", "field": field, "metric": "coverage_pct", "value": s["coverage"],
                 "n_model_missing": fd["n_model_missing"],
                 "note": "share of scored items where the model gave a value"})
+            _w({"type": "metric", "field": field, "metric": "accuracy_when_answered_pct",
+                "value": s["accuracy_answered"], "n": s["n_answered"],
+                "note": "accuracy among scored items where the model gave a value"})
 
             for gt_cls, preds in s["confusion"].items():
                 for pred_cls, count in preds.items():
@@ -1948,7 +1967,10 @@ def write_mamma_extraction_report_jsonl(
             base = {"type": "metric", "field": field, "variant": ge_variant,
                     "n_bewertet": ge_fields[field]["n_bewertet"],
                     "note": f"sensitivity analysis: gt_empty_ext_present="
-                            f"{'fp' if ge_alt else 'ignore'} (primary: {gt_empty_mode})"}
+                            f"{'fp' if ge_alt else 'ignore'} (primary: {gt_empty_mode})"
+                            + ("; worst-case bound: empty GT fields are mostly 'not annotated', so "
+                               "this also penalises values that are correct in the report"
+                               if ge_alt else "")}
             _w({**base, "metric": f"accuracy_{ge_tag}_pct", "value": s["accuracy"],
                 "ci_lo": s["acc_lo"], "ci_hi": s["acc_hi"]})
             _w({**base, "metric": f"macro_f1_{ge_tag}_pct", "value": s["macro_f1"]})
@@ -1957,7 +1979,10 @@ def write_mamma_extraction_report_jsonl(
             base = {"type": "metric", "field": side_key, "lesion_view": mode,
                     "variant": ge_variant, "n_sides": sd["n"],
                     "note": f"sensitivity analysis: gt_empty_ext_present="
-                            f"{'fp' if ge_alt else 'ignore'} (primary: {gt_empty_mode})"}
+                            f"{'fp' if ge_alt else 'ignore'} (primary: {gt_empty_mode})"
+                            + ("; worst-case bound: empty GT fields are mostly 'not annotated', so "
+                               "this also penalises values that are correct in the report"
+                               if ge_alt else "")}
             _w({**base, "metric": f"micro_precision_{ge_tag}_pct", "value": ls["precision"],
                 "ci_lo": ls["precision_ci"][0], "ci_hi": ls["precision_ci"][1]})
             _w({**base, "metric": f"micro_recall_{ge_tag}_pct", "value": ls["recall"],
@@ -2136,8 +2161,10 @@ def write_arm_extraction_report_jsonl(
     - verbatim_citation_rate_pct: Anteil der Zitate (finding=true), die wörtlich im Befund
       stehen (geprüft im Task, Spalte citation_check_json), getrennt nach TP-/FP-Aussagen;
       citation_match_pct = deprecated alias
-    - Parse-Fehler: nicht bewertet (n_parse_error); fehlende Labels: nicht als negativ,
-      sondern als fehlend gezählt (n_missing_labels) und nicht bewertet
+    - Keine Extraktion = "nichts gefunden": eine nicht parsebare Antwort (n_parse_error)
+      und Labels, die in einer Antwort fehlen (n_missing_labels), zählen als negative
+      Vorhersage (FN bei positiver GT, TN sonst) – wie bei Mamma, wo ein fehlender Wert
+      als falsch zählt. Beide Zahlen werden berichtet.
     """
     df = pd.read_csv(results_csv_path, dtype=str).fillna("")
 
@@ -2157,8 +2184,8 @@ def write_arm_extraction_report_jsonl(
     n_present_calls = 0
 
     for _, row in df.iterrows():
-        if row["parse_error"].lower() == "true":
-            continue  # not scored (reported as n_parse_error), not all-negative
+        # no extraction (unparseable answer) = nothing found: scored as all-negative
+        is_parse_error = row["parse_error"].lower() == "true"
         region = row.get("region", "") or "unknown"
 
         try:
@@ -2169,9 +2196,10 @@ def write_arm_extraction_report_jsonl(
             model_labels = _json.loads(row.get("model_labels_json") or "{}")
         except Exception:
             model_labels = {}
-        if not isinstance(model_labels, dict):
+        if not isinstance(model_labels, dict) or is_parse_error:
             model_labels = {}
-        missing_raw = _arm_missing_from_raw(row.get("model_raw", ""), list(gt_labels))
+        missing_raw = (set() if is_parse_error
+                       else _arm_missing_from_raw(row.get("model_raw", ""), list(gt_labels)))
 
         rep: dict = {}
         row_correct = row_neg = row_scored = row_missing = 0
@@ -2185,9 +2213,10 @@ def write_arm_extraction_report_jsonl(
             entry = model_labels.get(label)
             finding = entry.get("finding") if isinstance(entry, dict) else None
             if finding is None or label in missing_raw:
-                row_missing += 1
-                n_missing_pos += gt_bin
-                continue
+                if not is_parse_error:       # a label left out of a parsed answer
+                    row_missing += 1
+                    n_missing_pos += gt_bin
+                finding = False              # no extraction = not found
             pred_bin = int(finding is True)
             n_present_calls += pred_bin
 
@@ -2277,7 +2306,8 @@ def write_arm_extraction_report_jsonl(
         ci_note = "CI: bootstrap over reports (1000 resamples, seed 42), recomputed per resample"
         _w({"type": "metric", "metric": "n_gesamt",      "value": n_gesamt})
         _w({"type": "metric", "metric": "n_parse_error", "value": n_parse_error,
-            "note": "reports whose answer could not be parsed; excluded from all scores"})
+            "note": "reports whose answer could not be parsed; scored as all-negative "
+                    "(no extraction = nothing found)"})
         _w({"type": "metric", "metric": "n_truncated", "value": n_truncated,
             "n_parse_error_truncated": n_parse_error_truncated,
             "note": ("finish_reason == 'length' (answer cut off at max_tokens)"
@@ -2286,8 +2316,8 @@ def write_arm_extraction_report_jsonl(
         _w({"type": "metric", "metric": "n_missing_labels", "value": n_missing,
             "n_missing_labels_gt_positive": n_missing_pos,
             "n_reports_with_missing_labels": n_reports_missing,
-            "note": "labels absent from a parsed answer; counted as missing, not as negative, "
-                    "and excluded from TP/FP/FN/TN"})
+            "note": "labels absent from a parsed answer; scored as negative "
+                    "(no extraction = nothing found)"})
         _w({"type": "metric", "metric": "micro_f1_pct",  "value": result["micro_f1_pct"],
             "ci_lo": _p(boot["micro_f1"][0]), "ci_hi": _p(boot["micro_f1"][1]),
             "note": ci_note})

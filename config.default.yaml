@@ -63,7 +63,7 @@ judge:
 # Available benchmarks:
 #   medqa           – USMLE MCQ (4 options); metric: Accuracy
 #                     Paper: Jin et al. 2021 (https://arxiv.org/abs/2009.13081)
-#   rar             – Reasoning and Radiology MCQ (5 options); metric: Accuracy
+#   rar             – RaR (radiology Retrieval and Reasoning, Wind et al. 2025): 65 board-exam MCQ (5 options); metric: Accuracy
 #                     Paper: Wind et al. 2025, npj Digital Medicine
 #   radbench        – RadBench (harrison.ai) X-ray image VQA (VLM needed):
 #                     MCQ / yes-no accuracy, open questions: exact match + LLM-Judge

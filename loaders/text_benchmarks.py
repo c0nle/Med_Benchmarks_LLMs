@@ -127,7 +127,7 @@ def load_medqa(limit=None):
 
 
 # ---------------------------------------------------------------------------
-# RaR (Reasoning and Radiology)  →  data/rar-test.parquet
+# RaR (radiology Retrieval and Reasoning; board-exam questions)  →  data/rar-test.parquet
 # ---------------------------------------------------------------------------
 
 def _format_rar_item(item: dict, idx: int) -> dict:
@@ -154,11 +154,11 @@ def _format_rar_item(item: dict, idx: int) -> dict:
 
 def load_rar(limit=None):
     """
-    Loads RaR (Reasoning and Radiology) from data/RaR_dataset_WithAnswer.csv.
+    Loads RaR (radiology Retrieval and Reasoning; board-exam questions) from data/RaR_dataset_WithAnswer.csv.
     Columns: question_number, question, option_A..option_E, solution_index
     Dataset not public — contact authors: https://www.nature.com/articles/s41746-025-02250-5
     """
-    print("--- Lade RaR (Reasoning and Radiology) ---")
+    print("--- Lade RaR (radiology Retrieval and Reasoning; board-exam questions) ---")
 
     if not _RAR_PATH.exists():
         raise FileNotFoundError(

@@ -240,17 +240,21 @@ def _arm_eval(tmp_path, rows):
     return r, [x for x in lines if x["type"] != "item"]
 
 
-def test_arm_parse_error_not_scored_as_all_negative(tmp_path):
+def test_arm_parse_error_scored_as_no_extraction(tmp_path):
+    # an unparseable answer extracts nothing: positives become FN, negatives TN
     gt = {"Fracture": 1, "Ossicles": 0}
     good = _arm_row("c1", gt, {"Fracture": True, "Ossicles": False})
     bad = _arm_row("c2", gt, {}, parse_error=True)
-    r, _ = _arm_eval(tmp_path, [good, bad])
+    r, rows = _arm_eval(tmp_path, [good, bad])
     assert r["n_parse_error"] == 1
-    assert r["micro_f1_pct"] == 100.0          # the parse error adds no FN
-    assert r["accuracy_pct"] == 100.0
+    assert r["n_missing_labels"] == 0            # parse errors are not double-counted
+    frac = next(x for x in rows if x["type"] == "label_metric" and x["label"] == "Fracture")
+    assert (frac["tp"], frac["fn"]) == (1, 1)
+    assert r["micro_f1_pct"] == round(2 / 3 * 100, 2)   # TP 1, FN 1, FP 0
+    assert r["accuracy_pct"] == 75.0                     # 2/2 and 1/2 correct
 
 
-def test_arm_missing_labels_counted_as_missing(tmp_path):
+def test_arm_missing_labels_scored_as_negative(tmp_path):
     gt = {"Fracture": 1, "Ossicles": 0}
     new_fmt = _arm_row("c1", gt, {"Fracture": None, "Ossicles": False})
     # old format: missing label stored as False, detected from the raw answer
@@ -260,8 +264,8 @@ def test_arm_missing_labels_counted_as_missing(tmp_path):
     assert r["n_missing_labels"] == 2
     row = next(x for x in rows if x["metric"] == "n_missing_labels")
     assert row["n_missing_labels_gt_positive"] == 2
-    # never scored as FN/negative: no Fracture decision enters the counts at all
-    assert not [x for x in rows if x["type"] == "label_metric" and x["label"] == "Fracture"]
+    frac = next(x for x in rows if x["type"] == "label_metric" and x["label"] == "Fracture")
+    assert frac["fn"] == 2 and frac["tp"] == 0           # missing = not found
     oss = next(x for x in rows if x["type"] == "label_metric" and x["label"] == "Ossicles")
     assert oss["tn"] == 2
 
@@ -455,3 +459,15 @@ def test_arm_prompt_example_entries_are_comma_separated():
     from tasks.arm_extraction import _build_prompt
     p = _build_prompt("synthetic report", ["Fracture", "Ossicles"])
     assert '"Fracture": {"finding": true/false, "citation": "..."},\n  "Ossicles"' in p
+
+
+def test_mamma_accuracy_when_answered(tmp_path):
+    rows = [_mrow(0, gt_menopause="post", model_menopause="post"),
+            _mrow(1, gt_menopause="prä", model_menopause=""),
+            _mrow(2, gt_menopause="post", model_menopause="prä")]
+    r, out = _mamma_eval(tmp_path, rows)
+    assert r["menopause_accuracy_pct"] == round(1 / 3 * 100, 2)
+    assert r["menopause_accuracy_when_answered_pct"] == 50.0
+    row = next(x for x in out if x.get("field") == "menopause"
+               and x["metric"] == "accuracy_when_answered_pct")
+    assert row["n"] == 2

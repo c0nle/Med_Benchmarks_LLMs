@@ -480,3 +480,11 @@ def test_radbench_image_markers_are_numbered():
     assert _number_image_markers(q) == ("Compare the first study [Image 1] [Image 2] to the "
                                         "second study [Image 3]. Has a cast been applied?")
     assert _number_image_markers("No markers here?") == "No markers here?"
+
+
+def test_letter_fallback_only_for_short_replies_without_negation():
+    from evaluate import extract_choice
+    assert extract_choice("The answer is not A", "ABCD") is None
+    assert extract_choice("Comparing the options: **A:** Associated with", "ABCD") is None
+    assert extract_choice("I think C", "ABCD") == "C"
+    assert extract_choice("Answer: d", "ABCD") == "D"
