@@ -280,7 +280,9 @@ TP/FP/FN aggregated across all items before computing precision/recall. Used for
   coverage (share of scored items where the model gave a value; a missing value is wrong for accuracy but only an FN
   for macro-F1, so macro-F1 can exceed accuracy) and `accuracy_when_answered_pct` (accuracy among the items where
   the model gave a value). For menopause most missing values are exams whose report does not state the status
-  (the annotation took it from elsewhere), so read accuracy together with coverage and accuracy-when-answered. "ACR" in the GT is background parenchymal enhancement (1–4), not
+  (the annotation took it from elsewhere). `menopause_accuracy_in_report_pct` therefore scores only the exams whose
+  report mentions the status (keyword match in the loader, stored per exam as `menopause_in_report`; a missing model
+  value counts as wrong); the chart shows this value. "ACR" in the GT is background parenchymal enhancement (1–4), not
   breast density. BPE is usually one value per exam, so the left/right rows are not independent;
   `acr_exam_accuracy_pct` scores one decision per exam (exams whose GT differs between sides are excluded and counted).
 - Primary definition: BI-RADS 6 is mapped to 5 (`birads6_handling`; the GT has no 6 and the prompt asks for 2–5, so this only catches stray answers) and fields or lesion sides with

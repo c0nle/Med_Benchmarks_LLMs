@@ -310,3 +310,35 @@ def test_client_stops_after_consecutive_failures():
     c.ask_question("x"); c.ask_question("x")
     with pytest.raises(ServerUnavailableError):
         c.ask_question("x")
+
+
+def test_menopause_in_report_detection():
+    from loaders.mamma_extraction import menopause_in_report
+    assert menopause_in_report("Indikation: Staging. Postmenopausal.")
+    assert menopause_in_report("Untersuchung am 9. Zyklustag.")
+    assert menopause_in_report("Patientin prämenopausal, ZT 12")
+    assert not menopause_in_report("Indikation: Staging bei Mammakarzinom rechts.")
+
+
+def test_mamma_menopause_accuracy_in_report(tmp_path):
+    # 3 exams with GT "post": stated + right, stated + missing, not stated + missing
+    rows = []
+    for rid, in_report, model in (("a", "True", "post"), ("b", "True", ""), ("c", "False", "")):
+        r = _mamma_row([], [])
+        r.update({"id": rid, "menopause_in_report": in_report, "model_menopause": model})
+        rows.append(r)
+    csv_path = tmp_path / "m.csv"
+    pd.DataFrame(rows).to_csv(csv_path, index=False)
+    r = write_mamma_extraction_report_jsonl(str(csv_path), str(tmp_path / "m.jsonl"))
+    assert r["menopause_accuracy_pct"] == round(100 / 3, 2)      # all 3 exams
+    assert r["menopause_accuracy_in_report_pct"] == 50.0         # only a and b
+    row = next(json.loads(l) for l in open(tmp_path / "m.jsonl")
+               if '"accuracy_in_report_pct"' in l)
+    assert row["n"] == 2 and row["n_not_in_report"] == 1
+
+
+def test_mamma_menopause_in_report_absent_column(tmp_path):
+    csv_path = tmp_path / "m.csv"
+    pd.DataFrame([_mamma_row([], [])]).to_csv(csv_path, index=False)
+    r = write_mamma_extraction_report_jsonl(str(csv_path), str(tmp_path / "m.jsonl"))
+    assert "menopause_accuracy_in_report_pct" not in r and r["menopause_accuracy_pct"] == 100.0

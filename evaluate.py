@@ -1443,6 +1443,41 @@ def _acr_exam_level(df: pd.DataFrame, norms: dict, acr_range: str) -> dict:
     }
 
 
+def _menopause_in_report_level(df: pd.DataFrame, norms: dict, acr_range: str) -> dict:
+    """
+    Menopause accuracy restricted to exams whose report text mentions the status
+    (column menopause_in_report, written by the task). The annotation often takes the
+    status from other sources, so the plain accuracy counts "not in the report" as a
+    model error; this view measures the extraction itself. A missing model value or a
+    parse error counts as wrong. Returns accuracy None if the column is absent.
+    """
+    if "menopause_in_report" not in df.columns:
+        return {"accuracy": None}
+    flags = df["menopause_in_report"].astype(str).str.lower()
+    if not flags.isin(["true", "false"]).any():
+        return {"accuracy": None}
+    correct: list = []
+    n_not_in_report = 0
+    for (_, row), flag in zip(df.iterrows(), flags):
+        gt = _mamma_norm_field("menopause", row.get("gt_menopause", ""), norms, acr_range, "map_to_5")
+        if gt is None or flag not in ("true", "false"):
+            continue
+        if flag == "false":
+            n_not_in_report += 1
+            continue
+        pred = (None if row["parse_error"].lower() == "true" else
+                _mamma_norm_field("menopause", row.get("model_menopause", ""), norms, acr_range, "map_to_5"))
+        correct.append(int(pred == gt))
+    point, lo, hi = _bootstrap_ci(correct)
+    scored = bool(correct)
+    return {
+        "accuracy": round(point * 100, 2) if scored else None,
+        "ci_lo": round(lo * 100, 2) if scored else None,
+        "ci_hi": round(hi * 100, 2) if scored else None,
+        "n": len(correct), "n_not_in_report": n_not_in_report,
+    }
+
+
 def write_mamma_extraction_report_jsonl(
     results_csv_path: str,
     out_path: str,
@@ -1462,7 +1497,8 @@ def write_mamma_extraction_report_jsonl(
     gt_empty_ext_present (all fields + lesion sides); naming: see _BIRADS6_VARIANTS.
 
     Metrics per categorical field: accuracy (+CI), macro-F1, coverage, confusion matrix.
-    BPE also at exam level (acr_exam_accuracy_pct).
+    BPE also at exam level (acr_exam_accuracy_pct). Menopause also on the exams whose report
+    text mentions the status (menopause_accuracy_in_report_pct; needs column menopause_in_report).
     Lesions per side: main metric = set of lesion types (which types occur), plus a
     count view (multiset, one entry per lesion); micro P/R/F1 (+CIs) and exact match each.
     Counters: n_total, n_scored, n_gt_empty_model_present, n_both_empty, n_parse_error, n_truncated.
@@ -1504,6 +1540,7 @@ def write_mamma_extraction_report_jsonl(
         n_birads6[side] = (all_6, scored_6)
 
     acr_exam = _acr_exam_level(df, norms, acr_range)
+    meno_rep = _menopause_in_report_level(df, norms, acr_range)
 
     # ─── Metrics ──────────────────────────────────────────────────────────────
     result: dict = {"path": out_path}
@@ -1526,6 +1563,8 @@ def write_mamma_extraction_report_jsonl(
             result[f"{field}_accuracy_when_answered_pct"] = s["accuracy_answered"]
     if acr_exam["accuracy"] is not None:
         result["acr_exam_accuracy_pct"] = acr_exam["accuracy"]
+    if meno_rep["accuracy"] is not None:
+        result["menopause_accuracy_in_report_pct"] = meno_rep["accuracy"]
     b6_summaries = {f: _mamma_field_summary(b6_fields[f]) for f in ("birads_li", "birads_re")}
     for field, s in b6_summaries.items():
         if s["accuracy"] is not None:
@@ -1598,6 +1637,13 @@ def write_mamma_extraction_report_jsonl(
             "note": ("one BPE decision per exam; GT value = li if li == re (or the only GT side), "
                      "exams with GT li != re excluded; correct iff all non-empty model sides "
                      "equal the GT value")})
+        if meno_rep["accuracy"] is not None:
+            _w({"type": "metric", "field": "menopause", "metric": "accuracy_in_report_pct",
+                "value": meno_rep["accuracy"], "ci_lo": meno_rep["ci_lo"], "ci_hi": meno_rep["ci_hi"],
+                "n": meno_rep["n"], "n_not_in_report": meno_rep["n_not_in_report"],
+                "note": ("menopause accuracy on exams whose report text mentions the status "
+                         "(keyword match); the annotation often takes the status from other "
+                         "sources, so menopause_accuracy_pct also counts 'not in the report'")})
 
         for (side_key, mode), sd in lesion_sides.items():
             ls = lesion_summaries[(side_key, mode)]
@@ -1701,6 +1747,9 @@ def print_mamma_extraction_terminal_report(
         cov = r.get(f"{field}_coverage_pct", "?")
         print(f"  {field:<12}  acc={acc}%  macro_f1={mf1}%  coverage={cov}%")
     print(f"  {'acr_exam':<12}  acc={r.get('acr_exam_accuracy_pct', '?')}%")
+    if r.get("menopause_accuracy_in_report_pct") is not None:
+        print(f"  {'menopause':<12}  acc={r['menopause_accuracy_in_report_pct']}% "
+              "where the report states the status")
     for side in ("lesions_li", "lesions_re"):
         print(
             f"  {side:<12}  types: micro_f1={r.get(f'{side}_micro_f1_pct', '?')}%  "

@@ -34,8 +34,12 @@ Item schema:
     meta          : dict
         conflicts : list[str]  (report-file *_GT ≠ ground truth; empty for the current data)
         n_lesions_li, n_lesions_re: int
+        menopause_in_report: bool  (the report text mentions the menopausal status, see
+                                    menopause_in_report(); the annotation often takes the
+                                    status from other sources)
 """
 import logging
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -44,6 +48,19 @@ _GT_PATH   = Path("data/label_extraction/label_extraction_gt.xlsx")
 _HIWI_PATH = Path("data/label_extraction/hiwi_gt_ergaenzung.xlsx")
 
 _log = logging.getLogger(__name__)
+
+# Wording that states (or lets one read off) the menopausal status in a German report:
+# "postmenopausal", "Prämenopause", cycle day / week, last period, amenorrhoea.
+_MENOPAUSE_MENTION = re.compile(
+    r"(prä|prae|pre|post|peri)[\s-]*menopaus|menopaus|zyklus(tag|woche|mitte)?|\bZT\s*\d"
+    r"|letzte\s+regel|menstruation|amenorrh",
+    re.IGNORECASE,
+)
+
+
+def menopause_in_report(text: str) -> bool:
+    """True if the report text mentions the menopausal status (keyword match)."""
+    return bool(_MENOPAUSE_MENTION.search(text or ""))
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +230,7 @@ def load_mamma_extraction(limit=None, config=None):
                 "conflicts":    conflicts,
                 "n_lesions_li": len(lesions_li),
                 "n_lesions_re": len(lesions_re),
+                "menopause_in_report": menopause_in_report(befund),
             },
         })
 

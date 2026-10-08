@@ -440,6 +440,27 @@ def test_plot_with_incomplete_benchmark(tmp_path):
     assert out.exists() and out.stat().st_size > 10_000
 
 
+def test_plot_alternative_keys_and_vqa_med_categories():
+    from core.plot import collect_bars
+
+    def bars_of(summary, bench):
+        return [b for _, _, bars in collect_bars(summary) for b in bars if b["bench"] == bench]
+
+    new = {"menopause_accuracy_in_report_pct": 97.7, "menopause_accuracy_pct": 68.6}
+    old = {"menopause_accuracy_pct": 68.6}
+    meno_new = bars_of([("label_extraction_mamma", new, None)], "label_extraction_mamma")[0]
+    meno_old = bars_of([("label_extraction_mamma", old, None)], "label_extraction_mamma")[0]
+    assert (meno_new["key"], meno_new["value"]) == ("menopause_accuracy_in_report_pct", 97.7)
+    assert "in report" in meno_new["label"]
+    assert (meno_old["key"], meno_old["label"]) == ("menopause_accuracy_pct", "Meno-\npause acc.")
+
+    vqa = {f"open_category_{c}_judge_accuracy_pct": 50.0
+           for c in ("modality", "plane", "organ", "abnormality")}
+    vqa.update({"open_judge_accuracy_pct": 50.0, "open_exact_match_pct": 10.0})
+    keys = [b["key"] for b in bars_of([("vqa_med_2019", vqa, None)], "vqa_med_2019")]
+    assert len(keys) == 5 and "open_exact_match_pct" not in keys
+
+
 # ---------------------------------------------------------------------------
 # Logger, compare script
 # ---------------------------------------------------------------------------

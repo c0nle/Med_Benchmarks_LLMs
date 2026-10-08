@@ -18,11 +18,13 @@ Output schema expected from the model:
 Results CSV columns:
     id, benchmark,
     gt_menopause, gt_birads_li, gt_birads_re, gt_acr_li, gt_acr_re,
-    gt_lesions_li, gt_lesions_re,
+    gt_lesions_li, gt_lesions_re, menopause_in_report,
     model_raw, model_menopause, model_birads_li, model_birads_re,
     model_acr_li, model_acr_re, model_lesions_li, model_lesions_re,
     parse_error, finish_reason, completion_tokens
 
+menopause_in_report: "True" if the report text mentions the menopausal status (computed
+by the loader; the report text itself is not stored).
 finish_reason / completion_tokens come from client.last_meta (empty if the client does
 not provide it); finish_reason == "length" means the JSON answer was truncated.
 """
@@ -47,7 +49,7 @@ _LESION_VOCABULARY = [
 _FIELDNAMES = [
     "id", "benchmark",
     "gt_menopause", "gt_birads_li", "gt_birads_re", "gt_acr_li", "gt_acr_re",
-    "gt_lesions_li", "gt_lesions_re",
+    "gt_lesions_li", "gt_lesions_re", "menopause_in_report",
     "model_raw", "model_menopause", "model_birads_li", "model_birads_re",
     "model_acr_li", "model_acr_re", "model_lesions_li", "model_lesions_re",
     "parse_error", "finish_reason", "completion_tokens",
@@ -170,6 +172,7 @@ def _process_item(client, item: dict):
         "gt_acr_re":      gt.get("acr_re") or "",
         "gt_lesions_li":  json.dumps(gt.get("lesions_li") or [], ensure_ascii=False),
         "gt_lesions_re":  json.dumps(gt.get("lesions_re") or [], ensure_ascii=False),
+        "menopause_in_report": str(bool((item.get("meta") or {}).get("menopause_in_report"))),
         "model_raw":      model_answer or "",
         "model_menopause": model_meno,
         "model_birads_li": birads_li or "",

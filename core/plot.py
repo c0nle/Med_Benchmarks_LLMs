@@ -8,8 +8,9 @@ Benchmark results bar chart: one panel per benchmark family, headline metrics on
 """
 import os
 
-# (benchmark, metric key, bar label, chance level or None); the benchmark's
-# display name (_DISPLAY) is written once under its group of bars.
+# (benchmark, metric key or a tuple of alternative keys, bar label or one label per key,
+# chance level or None); the benchmark's display name (_DISPLAY) is written once under
+# its group of bars.
 _PANELS = [
     ("Text MCQ", "#2a78d6", [
         ("medqa",    "accuracy_pct", "Accuracy", 25.0),   # 4 options
@@ -32,7 +33,10 @@ _PANELS = [
         ("radimagenet_vqa", "open_judge_accuracy_pct", "Open\n(judge)", None),
     ]),
     ("German report extraction", "#1baf7a", [
-        ("label_extraction_mamma", "menopause_accuracy_pct",  "Meno-\npause acc.", None),
+        # menopause where the report states it (the annotation often uses other sources);
+        # results without the menopause_in_report column fall back to the plain accuracy
+        ("label_extraction_mamma", ("menopause_accuracy_in_report_pct", "menopause_accuracy_pct"),
+         ("Meno-\npause acc.\n(in report)", "Meno-\npause acc."), None),
         ("label_extraction_mamma", "birads_li_accuracy_pct",  "BI-RADS\nL acc.",   None),
         ("label_extraction_mamma", "birads_re_accuracy_pct",  "BI-RADS\nR acc.",   None),
         ("label_extraction_mamma", "acr_li_accuracy_pct",     "BPE L\nacc.",       None),
@@ -87,13 +91,18 @@ def collect_bars(summary: list) -> list:
     panels = []
     for title, color, spec in _PANELS:
         bars = []
-        for bench, key, label, chance in spec:
+        for bench, keys, labels, chance in spec:
             m = by_bench.get(bench)
             if not m:
                 continue
-            value = _num(m.get(key))
-            if value is None:
+            # a tuple of keys = alternatives: the first one present is plotted
+            keys = keys if isinstance(keys, tuple) else (keys,)
+            labels = labels if isinstance(labels, tuple) else (labels,) * len(keys)
+            key, label = next(((k, l) for k, l in zip(keys, labels) if _num(m.get(k)) is not None),
+                              (None, None))
+            if key is None:
                 continue
+            value = _num(m.get(key))
             lo, hi = _num(m.get(f"{key}_ci_lo")), _num(m.get(f"{key}_ci_hi"))
             bars.append({
                 "bench": bench, "key": key, "label": label, "value": value,
