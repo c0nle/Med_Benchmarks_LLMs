@@ -20,8 +20,13 @@ _PANELS = [
         ("radbench",        "mcq_accuracy_pct",        "MCQ",           None),  # 2–12 options
         ("radbench",        "yes_no_accuracy_pct",     "Yes/No",        50.0),
         ("radbench",        "open_judge_accuracy_pct", "Open\n(judge)", None),
-        ("vqa_med_2019",    "open_exact_match_pct",    "Exact\nmatch",  None),
-        ("vqa_med_2019",    "open_judge_accuracy_pct", "Open\n(judge)", None),
+        # VQA-Med per question category: the overall value averages easy recognition
+        # (modality, plane, organ) with hard diagnosis (abnormality)
+        ("vqa_med_2019",    "open_category_modality_judge_accuracy_pct",    "Modality\n(judge)", None),
+        ("vqa_med_2019",    "open_category_plane_judge_accuracy_pct",       "Plane\n(judge)",    None),
+        ("vqa_med_2019",    "open_category_organ_judge_accuracy_pct",       "Organ\n(judge)",    None),
+        ("vqa_med_2019",    "open_category_abnormality_judge_accuracy_pct", "Abnorm.\n(judge)",  None),
+        ("vqa_med_2019",    "open_judge_accuracy_pct",                      "All\n(judge)",      None),
         ("radimagenet_vqa", "mcq_accuracy_pct",        "MCQ",           25.0),  # 4 options
         ("radimagenet_vqa", "yes_no_accuracy_pct",     "Yes/No",        50.0),
         ("radimagenet_vqa", "open_judge_accuracy_pct", "Open\n(judge)", None),
